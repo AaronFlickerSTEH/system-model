@@ -2,8 +2,11 @@ library(tidyverse)
 library(lubridate)
 library(reshape2)
 
+rrh <- 2200000
+psh <- 4200000-rrh
+
 source("P:/CONTINUUM OF CARE FILES/Data Analysis/theme.R")
-setwd("P:/CONTINUUM OF CARE FILES/Data Analysis/System model/2020 fall/inputs")
+setwd("P:/CONTINUUM OF CARE FILES/Data Analysis/System model/CoC/inputs")
 active <- read.csv("active.csv") %>%
   mutate(ProgramPop = ClientPop)
 exitrates <- read.csv("exitrates.csv")
@@ -11,31 +14,15 @@ fth <- read.csv("fth.csv") %>%
   mutate(ProgramType = "Homeless")
 inactive <- read.csv("inactive.csv")
 returnrates <- read.csv("returnrates.csv")
+secondentry <- read.csv("secondentry.csv")
 
-# base <- active %>%
-#   group_by(ProgramType, ProgramPop) %>%
-#   summarise(Active = sum(Active)) %>%
-#   mutate(Active = ifelse(ProgramType == "PSH", Active*1320*12, Active*660*12))
-
-preventadult <- 95040
-preventvet <- 190080
-preventyouth <- 491040
-pshadult <- 13479840
-pshvet <- 4245120
-pshyouth <- 1235520
-rrhadult <- 2140080
-rrhvet <- 348480
-rrhyouth <- 910800
-thadult <- 269280
-thvet <- 823680
-thyouth <- 110880
-
-capacity <- data.frame(ProgramType = c(rep("Prevention", 3), rep("PSH", 3), rep("RRH", 3), rep("TH", 3)),
-                       ProgramPop = rep(c("Adult", "Veteran", "Youth"), 4),
-                       Spending = c(preventadult, preventvet, preventyouth, pshadult, pshvet, pshyouth, rrhadult, rrhvet, rrhyouth, thadult, thvet, 
-                                    thyouth)) %>%
-  mutate(Capacity = ifelse(ProgramType == "PSH", Spending/(12*1320), Spending/(12*660))) %>%
-  select(-Spending)
+capacity <- active %>%
+  filter(ProgramType != "Homeless") %>%
+  group_by(ProgramType, ProgramPop) %>%
+  summarise(Active = sum(Active)) %>%
+  mutate(Spending = ifelse(ProgramType == "PSH" & ProgramPop == "Adult", psh*1.25+6949902,
+                           ifelse(ProgramType == "RRH" & ProgramPop == "Adult", rrh*1.25+843035, Active*997*12)),
+         Capacity = floor(Spending/(997*12)))
 
 months <- 1:60
 
@@ -107,8 +94,11 @@ for (i in months){
   programexits <- activeafterprogramexits %>%
     group_by(ProgramType, ClientPop, Disabled) %>%
     summarise(Exits = sum(Exits)) %>%
-    mutate(RRH = ifelse(ProgramType == "TH", Exits*.122, 0),
-           PSH = ifelse(ProgramType == "TH" & Disabled == 1, Exits*.023, 0))
+    left_join(secondentry) %>%
+    mutate(RRH = ifelse(is.na(RRH), 0, RRH),
+           PSH = ifelse(is.na(PSH), 0, PSH),
+           RRH = RRH*Exits,
+           PSH = PSH*Exits)
   programexittotal <- sum(programexits$Exits)-sum(programexits$RRH)-sum(programexits$PSH)
   activeafterreentries <- data.frame(programexits) %>%
     select(ClientPop, Disabled, RRH, PSH) %>%
@@ -510,10 +500,11 @@ totalframe <- data.frame(Month = c(0, months),
 
 parts <- filter(parts, !is.na(Month))
 
-ggplot(totalframe, aes(x=Month, y=value, color=variable)) + geom_line(size=1) + stehtheme + scale_color_manual(values = c(stehblue2, stehblue4)) +
-  labs(x="Months out", y=NULL, title = "Individuals experiencing homelessness", color=NULL) + theme(legend.position = "bottom") +
-  scale_x_continuous(breaks = seq(1, 61, 12), labels = seq(0, 60, 12))
+ggplot(totalframe, aes(x=Month, y=value, color=variable)) + geom_line(size=1) + stehtheme + 
+  scale_color_manual(values = c(stehblue2, stehblue4)) + scale_x_continuous(breaks = seq(1, 61, 12), labels = seq(0, 60, 12)) +
+  labs(x="Months out", y=NULL, title = "Individuals experiencing homelessness", color=NULL) + theme(legend.position = "bottom")
+  
 
-ggplot(parts, aes(x=Month, y= value, color=variable)) + geom_line(size=1) + stehtheme  
+#ggplot(parts, aes(x=Month, y= value, color=variable)) + geom_line(size=1) + stehtheme  
 
 
