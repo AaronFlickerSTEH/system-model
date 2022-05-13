@@ -1,29 +1,38 @@
-adultprevention <- 13
-adultpsh <- 949
-adultrrh <- 197
-adultth <- 36
-veteranprevention <- 7
-veteranpsh <- 268
-veteranrrh <- 35
-veteranth <- 101
-youthprevention <- 2
-youthpsh <- 86
-youthrrh <- 35
-youthth <- 11
+adultprevention <- 15
+adultpsh <- 1017
+adultrrh <- 201
+adultth <- 44
+veteranprevention <- 10
+veteranpsh <- 300
+veteranrrh <- 40
+veteranth <- 100
+youthprevention <- 5
+youthpsh <- 100
+youthrrh <- 40
+youthth <- 20
 
 library(tidyverse)
 library(lubridate)
 library(reshape2)
 source("U:/theme.R")
-setwd("U:/system model/No winter/survival/inputs")
+setwd("U:/system model/inputs")
 active <- read.csv("active.csv")[,-1] %>%
-  mutate(ProgramPop = ClientPop)
-exitrates <- read.csv("exitrates.csv")[,-1]
+  mutate(ClientPop = factor(ClientPop, levels = c("Veteran", "Youth", "Adult")),
+         ProgramPop = ClientPop)
+exitrates <- read.csv("exitrates.csv")[,-1] %>%
+  mutate(ClientPop = factor(ClientPop, levels = c("Veteran", "Youth", "Adult")))
 fth <- read.csv("fth.csv")[,-1] %>%
   mutate(Months = 0,
-         ProgramType = "Homeless")
-inactive <- read.csv("inactive.csv")[,-1]
-returnrates <- read.csv("returnrates.csv")[,-1]
+         ProgramType = "Homeless",
+         ClientPop = factor(ClientPop, levels = c("Veteran", "Youth", "Adult")),
+         ProgramPop = ClientPop)
+inactive <- read.csv("inactive.csv")[,-1] %>%
+  mutate(ClientPop = factor(ClientPop, levels = c("Veteran", "Youth", "Adult")))
+returnrates <- read.csv("returnrates.csv")[,-1] %>%
+  mutate(ClientPop = factor(ClientPop, levels = c("Veteran", "Youth", "Adult")))
+winter <- read.csv("winter.csv")[,-1]
+
+clientpops <- c("Veteran", "Youth", "Adult")
 
 prevententry <- function(df){
   for (i in 1:nrow(df)){
@@ -34,6 +43,7 @@ prevententry <- function(df){
   }
   df
 }
+
 entry <- function(df){
   for (i in 1:nrow(df)){
     df$Entries[i] = ifelse(df$Rank[i] == 1,
@@ -43,6 +53,7 @@ entry <- function(df){
   }
   df
 }
+
 ProgramType <- c("Prevention", "PSH", "RRH", "TH")
 Adult <- c(adultprevention, adultpsh, adultrrh, adultth)
 Veteran <- c(veteranprevention, veteranpsh, veteranrrh, veteranth)
@@ -63,13 +74,24 @@ homelessnums <- homeless %>%
   summarise(Total = sum(Active),
             Youth = sum(Active[ClientPop == "Youth"]),
             Veterans = sum(Active[ClientPop == "Veteran"]))
-homelesstotal[1] <- sum(homelessnums$Total)
-homelessyouth[1] <- sum(homelessnums$Youth)
-homelessvets[1] <- sum(homelessnums$Veterans)
+winternums <- winter %>%
+  filter(Month == 0) %>%
+  select(-Month)
+totalnums <- rbind(homelessnums, winternums)
+
+homelesstotal[1] <- sum(totalnums$Total)
+homelessyouth[1] <- sum(totalnums$Youth)
+homelessvets[1] <- sum(totalnums$Veterans)
 rm(homelessnums)
+rm(totalnums)
+rm(winternums)
+
+programexitnum <- rep(NA, length(months))
+forcedexitnum <- rep(NA, length(months))
+fthnum <- rep(NA, length(months))
 programentrynum <- rep(NA, length(months))
-reentrynum <- rep(NA, length(months))
-srnum <- rep(NA, length(months))
+activesrnum <- rep(NA, length(months))
+fthsrnum <- rep(NA, length(months))
 recidnum <- rep(NA, length(months))
 
 for (i in months){
@@ -83,6 +105,7 @@ for (i in months){
     set.seed(j)
     activeafterprogramexits$Exits[j] <- sum(runif(activeafterprogramexits$Active[j]) < activeafterprogramexits$ExitProb[j])
   }
+  programexitnum[i] <- sum(activeafterprogramexits$Exits)
   activeafterprogramexits <- activeafterprogramexits %>%
     mutate(Active = Active-Exits) %>%
     select(-ExitProb) %>%
@@ -116,7 +139,6 @@ for (i in months){
     right_join(activeafterprogramexits) %>%
     mutate(Reentries = ifelse(is.na(Reentries), 0, Reentries)) %>%
     select(-Exits)
-  reentrynum[i] <- sum(activeafterreentries$Reentries)
   rm(activeafterprogramexits)
   rm(nothexits)
   rm(thexits)
@@ -130,7 +152,7 @@ for (i in months){
   rm(inactive)
   extracapacity <- activeafterreentries %>%
     group_by(ProgramType, ProgramPop) %>%
-    summarise(Active = sum(Active)+sum(Reentries)) %>%
+    summarise(Active = sum(Active)) %>%
     full_join(capacity) %>%
     mutate(Openings = Capacity-Active,
            ForcedExits = ifelse(Openings < 0, abs(Openings), 0)) %>%
@@ -168,18 +190,23 @@ for (i in months){
       mutate(ForcedExits = ifelse(is.na(ForcedExits), 0, ForcedExits),
              Exits = Exits+ForcedExits) %>%
       select(ProgramType, ClientPop, Disabled, Months, Exits, Inactive)
+    forcedexitnum[i] <- sum(forcedexits$ForcedToExit)
     rm(forcedexits)
   }
   if(sum(extracapacity$Openings < 0) == 0){
     inactiveafterforcedexits <- inactiveafterreentries
     activeafterforcedexits <- activeafterreentries
+    forcedexitnum[i] <- 0
   }
   rm(inactiveafterreentries)
   rm(activeafterreentries)
   activeafterfth <- activeafterforcedexits %>%
+    mutate(Month = ifelse(i%%12 == 0, 12, i%%12)) %>%
     left_join(fth) %>%
     mutate(FTH = ifelse(is.na(FTH), 0, FTH),
-           PreventionEligible = ifelse(is.na(PreventionEligible), 0, PreventionEligible))
+           PreventionEligible = ifelse(is.na(PreventionEligible), 0, PreventionEligible)) %>%
+    select(-Month)
+  fthnum[i] <- sum(activeafterfth$FTH)
   rm(activeafterforcedexits)
   preventspecialcapacity <- extracapacity %>%
     filter(ProgramType == "Prevention",
@@ -226,13 +253,13 @@ for (i in months){
   rm(preventspecialcapacity)
   preventcapacity <- extracapacity %>%
     filter(ProgramType == "Prevention",
-           ProgramPop == "Adult",
-           Openings > 0)
+           ProgramPop == "Adult")
   if(nrow(preventcapacity) > 0){
     openings <- preventcapacity$Openings[1]
     preventactive <- data.frame(activeafterpreventspecial) %>%
       filter(PreventionEligible > 0) %>%
       mutate(Openings = openings,
+             ClientPop = factor(ClientPop, levels = clientpops),
              ProgramPop = "Adult")
     preventactive <- preventactive[order(-preventactive$Disabled, preventactive$ClientPop),]
     preventactive$Rank <- 1:nrow(preventactive)
@@ -448,10 +475,10 @@ for (i in months){
            ProgramPop != "Adult",
            Openings > 0)
   if(nrow(thspecialcapacity) > 0){
-    thspecialactive <- data.frame(activeafterrrh) %>%
+    thspecialactive <- activeafterrrh %>%
       filter(Active > 0,
              ProgramType == "Homeless") %>%
-      inner_join(thspecialcapacity, by = "ProgramPop")
+      right_join(thspecialcapacity, by = "ProgramPop")
     thspecialactive <- thspecialactive[order(thspecialactive$ClientPop, -thspecialactive$Months, -thspecialactive$Disabled),]
     thspecialactive <- thspecialactive %>%
       group_by(ProgramPop) %>%
@@ -527,6 +554,7 @@ for (i in months){
   if(thopenings <= 0){
     activeafterth <- activeafterthspecial
   }
+  programentrynum[i] <- sum(activeafterth$Entries)
   rm(activeafterthspecial)
   rm(thcapacity)
   sr <- activeafterth %>%
@@ -559,8 +587,8 @@ for (i in months){
              Exits = Exits.x+Exits.y) %>%
       select(ProgramType, ClientPop, Disabled, Months, Inactive, Exits)
   }
-  srnum[i] <- sum(sr$ActiveExits)+sum(sr$FTHExits)
-  programentrynum[i] <- sum(activeaftersr$Entries)
+  activesrnum[i] <- sum(sr$ActiveExits)
+  fthsrnum[i] <- sum(sr$FTHExits)
   if(nrow(sr) == 0){
     activeaftersr <- activeafterth
     inactiveaftersr <- inactiveafterforcedexits
@@ -568,19 +596,21 @@ for (i in months){
   rm(activeafterth)
   rm(inactiveafterforcedexits)
   recid <- left_join(inactiveaftersr, returnrates) %>%
-    mutate(Recid = NA)
+    mutate(InactiveRecid = NA,
+           ExitRecid = NA)
   for (n in 1:nrow(recid)){
     set.seed(n+300)
-    recid$Recid[n] <- sum(runif(recid$Inactive[n]) < recid$ReturnProb[n])
+    recid$InactiveRecid[n] <- sum(runif(recid$Inactive[n]) < recid$ReturnProb[n])
+    recid$ExitRecid[n] <- sum(runif(recid$Exits[n]) < recid$ReturnProb[n])
   }
-  recidnum[i] <- sum(recid$Recid)
+  recidnum[i] <- sum(recid$InactiveRecid)+sum(recid$ExitRecid)
   inactiveafterrecid1 <- recid %>%
-    mutate(Inactive = Inactive-Recid,
+    mutate(Inactive = Inactive-InactiveRecid,
            Months = Months+1) %>%
     filter(Months < 24) %>%
     select(ProgramType, ClientPop, Disabled, Months, Inactive)
   inactiveafterrecid2 <- recid %>%
-    mutate(Inactive = Exits) %>%
+    mutate(Inactive = Exits-ExitRecid) %>%
     filter(Months == 0) %>%
     select(ProgramType, ClientPop, Disabled, Months, Inactive)
   inactive <- rbind(inactiveafterrecid1, inactiveafterrecid2)
@@ -589,7 +619,8 @@ for (i in months){
   activeafterrecid <- data.frame(recid) %>%
     mutate(ProgramType = "Homeless",
            ProgramPop = ClientPop,
-           Months = 0) %>%
+           Months = 0,
+           Recid = InactiveRecid+ExitRecid) %>%
     group_by(ProgramType, ProgramPop, ClientPop, Disabled, Months) %>%
     summarise(Recid = sum(Recid)) %>%
     right_join(activeaftersr) %>%
@@ -626,9 +657,26 @@ for (i in months){
   homelessnums <- homeless %>%
     group_by(ClientPop) %>%
     summarise(Total = sum(Active))
+  homelessnums <- t(homelessnums)
+  cols <- homelessnums[1,]
+  homelessnums <- data.frame(homelessnums, row.names = NULL)
+  colnames(homelessnums) <- cols
+  homelessnums <- homelessnums[2,] %>%
+    mutate(Adult = as.numeric(as.character(Adult)),
+           Veterans = as.numeric(as.character(Veteran)),
+           Youth = as.numeric(as.character(Youth))) %>%
+    select(-Veteran)
+  homelessnums$Total <- apply(homelessnums, 1, sum)
+  homelessnums$Adult <- NULL
+  if(i%%12 < 3){
+    homelessnums <- winter %>%
+      filter(Month == i%%12) %>%
+      select(-Month) %>%
+      rbind(homelessnums)
+  }
   homelesstotal[i+1] <- sum(homelessnums$Total)
-  homelessyouth[i+1] <- homelessnums$Total[homelessnums$ClientPop == "Youth"]
-  homelessvets[i+1] <- homelessnums$Total[homelessnums$ClientPop == "Veteran"]
+  homelessyouth[i+1] <- homelessnums$Youth
+  homelessvets[i+1] <- homelessnums$Veterans
   rm(homelessnums)
   rm(homeless)
 }
@@ -637,23 +685,8 @@ colnames(totalframe) <- c("Months", "Total")
 totalframe$Veterans <- homelessvets
 totalframe$Youth <- homelessyouth
 totalframe <- melt(totalframe, id.vars = "Months")
-
-x <- ggplot(totalframe, aes(x=Months, y=value, color=variable)) 
-x + stat_smooth(se=FALSE) + stehtheme + labs(x="Months out", y=NULL, title="Individuals experiencing homelessness", color=NULL) + 
-  scale_x_continuous(breaks = seq(0, 60, 12)) + scale_color_manual(values = c(stehblue, stehgreen, stehorange)) + 
-  scale_y_continuous(limits = c(0, 1000), breaks = seq(0, 1000, 250), labels = format(seq(0, 1000, 250), big.mark = ",")) +
-  theme(legend.position = "bottom")
+ggplot(totalframe, aes(x=Months, y=value, color=variable)) + geom_line(size=1) + stehtheme + 
+  labs(x="Months out", y=NULL, title="Individuals experiencing homelessness", color=NULL) + scale_x_continuous(breaks = seq(0, 60, 12)) +
+  scale_y_continuous(limits = c(0, 1700), breaks = seq(0, 1500, 250), labels = format(seq(0, 1500, 250), big.mark = ",")) +
+  scale_color_manual(values = c(stehblue, stehgreen, stehorange)) + theme(legend.position = "bottom")
   
-
-
-#breakframe <- data.frame(months, programentrynum) %>%
-#  cbind(srnum) %>%
-#  cbind(recidnum) %>%
-#  cbind(reentrynum) %>%
-#  mutate(enter = reentrynum+recidnum+213,
-#         out = programentrynum+srnum,
-#         net = enter-out) %>%
-#  select(-reentrynum)
-#colnames(breakframe) <- c("Months", "ProgramEntries", "SR", "Recid", "In", "Out", "Net")
-#breakframe <- melt(breakframe, id.vars =  "Months")
-#ggplot(breakframe, aes(x=Months, y=value, color=variable)) + geom_line(size=1) + stehtheme
