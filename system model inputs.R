@@ -3,20 +3,13 @@ library(lubridate)
 library(survival)
 library(reshape2)
 library(readxl)
-setwd("C:/Users/aflicker/Strategies To End Homelessness, Inc/CommonFiles - CommonFiles/CONTINUUM OF CARE FILES/Data Analysis/System model/Current/CoC/RRH correction")
-
-mod <- read.csv("singles.csv", col.names = c("EnrollmentID", "PersonalID", "HouseholdID", "Program", "ProgramType", "Veteran", "Entry", 
-                                             "MoveIn", "Exit", "Age", "ChronicHealth", "Developmental", "HIV", "MentalHealth", "Physical", 
-                                             "SubstanceAbuse", "NightBefore"))
-
-##Filters out veterans, housing clients without move-in dates, KEYS clients, eviction prevention clients, winter shelters, 
-## post-dated move-ins, exits more than four years old; determines disability status; determines eligibility for prevention based on
-## previous location; changes entry date to move-in date for housing programs
-mod2 <- mod %>%
-  mutate(ProgramType = ifelse(ProgramType == "Homeless Prevention", "Prevention",
+setwd("C:/Users/aflicker/Strategies To End Homelessness, Inc/CommonFiles - CommonFiles/CONTINUUM OF CARE FILES/Data Analysis/System model/Current/vulnerable")
+mod <- read.csv("singles.csv", col.names = c("EnrollmentID", "PersonalID", "HouseholdID", "Program", "ProgramType", "Veteran", "Entry", "MoveIn", "Exit", 
+                                             "Age", "ChronicHealth", "Developmental", "HIV", "MentalHealth", "Physical", "SubstanceAbuse", "NightBefore")) %>%
+   mutate(ProgramType = ifelse(ProgramType == "Homelessness Prevention", "Prevention",
                               ifelse(ProgramType %in% c("Emergency Shelter", "Safe Haven", "Street Outreach"), "Homeless",
                                      ifelse(ProgramType == "Transitional Housing", "TH",
-                                            ifelse(ProgramType == "PH - Permanent Supportive Housing (disability required)", "PSH",
+                                            ifelse(ProgramType == "PH - Permanent Supportive Housing (disability required for entry)", "PSH",
                                                    ifelse(ProgramType == "PH - Rapid Re-Housing", "RRH", ProgramType))))),
          Entry = ymd(Entry),
          MoveIn = ymd(MoveIn),
@@ -24,40 +17,43 @@ mod2 <- mod %>%
          Disabled = ifelse(ChronicHealth == "Yes" | Developmental == "Yes" | HIV == "Yes" | MentalHealth == "Yes" |
                              SubstanceAbuse == "Yes" | Physical == "Yes", 1, 0),
          PreventionEligible = ifelse(NightBefore %in% c("", "Client doesn't know", "Client refused", "Data not collected",
-          "Emergency shelter, including hotel or motel paid for with emergency shelter voucher, or RHY-funded Host Home shelter",
-          "Hospital or other residential non-psychiatric medical facility", "Jail, prison or juvenile detention facility",
-    "Place not meant for habitation (e.g., a vehicle, an abandoned building, bus/train/subway station/airport or anywhere outside)",
+                              "Emergency shelter, including hotel or motel paid for with emergency shelter voucher, or RHY-funded Host Home shelter",
+                              "Hospital or other residential non-psychiatric medical facility", "Jail, prison or juvenile detention facility",
+                              "Place not meant for habitation (e.g., a vehicle, an abandoned building, bus/train/subway station/airport or anywhere outside)",
     "Safe Haven"), 0, 1)) %>%
   filter(is.na(Exit) | Exit >= today()-1461,
          Entry < today(),
          is.na(MoveIn) | MoveIn < today(),
-         Program %in% c("TAL HC Rental Assistance Program", "IHN Aftercare", "BHS ESG-CV Aftercare", "BHS TANF RRH", "CGM Winter Shelter",
-                        "TAL - POP Winter Shelter", "BHS KEYS - OH0598", "IHN KEYS - OH0598", "LYS KEYS - OH0598", "TAL RAP - TANF",
+         Veteran != "Yes",
+         Program %in% c("TAL - POP Winter Shelter", "[BETA] LYS KEYS - OH0598", "BHS ESG-CV Aftercare", "CGM Winter Shelter", "IHN Aftercare",
+                        "BHS KEYS - OH0598", "IHN KEYS - OH0598", "LYS KEYS - OH0598", "Maslow's Army Shelter", "Maslows Army Hotel/Motel",
                         "SA KEYS - OH0598") == FALSE,
-         (ProgramType != "RRH" & ProgramType != "PSH") | !is.na(MoveIn),
-         Veteran != "Yes") %>%
-  mutate(Program = factor(Program),
-         NewEntry = Entry)
-mod2$NewEntry[!is.na(mod2$MoveIn)] <- mod2$MoveIn[!is.na(mod2$MoveIn)]
+         (ProgramType != "RRH" & ProgramType != "PSH") | !is.na(MoveIn))
+vi <- read.csv("vispdat.csv", 
+               col.names = c("PersonalID", "VIType", "VIDate", "Score"),
+               colClasses = c("character", "character", "Date", "numeric"))
 
-###Filter out unaccompanied youths
-mod3 <- mod2 %>%
+###Filter out unaccompanied youth
+mod2 <- mod %>%
   group_by(HouseholdID) %>%
   summarise(maxage = max(Age)) %>%
-  right_join(mod2) %>%
+  right_join(mod) %>%
   filter(maxage > 24) %>%
-  select(-maxage)
+  select(-maxage) %>%
+  mutate(NewEntry = Entry)
+###Set entry to move-in date where applicable
+mod2$NewEntry[!is.na(mod2$MoveIn)] <- mod2$MoveIn[!is.na(mod2$MoveIn)]
 
-###filter out housing clients without move-in dates
-mod4 <- mod3 %>%
+###Filter out enrollments with exit dates on or before entry/move-in
+mod3 <- mod2 %>%
   filter(is.na(Exit) | Exit > NewEntry) %>%
-  mutate(Entry = NewEntry) %>%
-  select(EnrollmentID, PersonalID, ProgramType:Entry, Exit, Disabled, PreventionEligible)
-mod4$FakeExit <- mod4$Exit
-mod4$FakeExit[is.na(mod4$FakeExit)] <- today()
+  mutate(Entry = NewEntry,
+         FakeExit = Exit) %>%
+  select(EnrollmentID, PersonalID, ProgramType, Entry, Exit, Disabled, PreventionEligible, FakeExit)
+mod3$FakeExit[is.na(mod3$FakeExit)] <- today()
 
 ###Determine date ranges during which each client was enrolled in each program type
-dates <- select(mod4, PersonalID, ProgramType, Entry, FakeExit)
+dates <- select(mod3, PersonalID, ProgramType, Entry, FakeExit)
 people <- unique(dates$PersonalID)
 types <- c("PSH", "RRH", "TH", "Prevention", "Homeless")
 dateframe <- data.frame(PersonalID = NA,
@@ -65,9 +61,9 @@ dateframe <- data.frame(PersonalID = NA,
                         Entry = as.Date(NA),
                         Exit = as.Date(NA))
 
-for (i in people){
+for (i in 1:length(people)){
   datelist <- as.list(rep(NA, length(types)))
-  clientframe <- filter(dates, PersonalID == i)
+  clientframe <- filter(dates, PersonalID == people[i])
   for (j in 1:length(types)){
     typeframe <- filter(clientframe, ProgramType == types[j])
     typedates <- as.Date(NA)
@@ -93,7 +89,7 @@ for (i in people){
         nondates <- nondates[nondates > max(entries)]
         exits <- append(exits, min(nondates))
       }
-      tempframe <- data.frame(PersonalID = i,
+      tempframe <- data.frame(PersonalID = people[i],
                               ProgramType = types[k],
                               Entry = entries,
                               Exit = exits)
@@ -102,37 +98,28 @@ for (i in people){
     }
   }
 }
-dateframe <- filter(dateframe, !is.na(dateframe$PersonalID))
 dateframe$Exit[dateframe$Exit == today()] <- NA
 
-## Resolve discrepancies in disability/prevention eligibility for each entry
-disab <- mod4 %>%
+## Determine disability status for each client
+disab <- mod3 %>%
+  group_by(PersonalID) %>%
+  summarise(Disabled = max(Disabled))
+
+## Determine prevention eligibility status for each entry
+pe <- mod3 %>%
   group_by(PersonalID, Entry) %>%
-  summarise(Disabled = max(Disabled),
-            PreventionEligible = min(PreventionEligible))
+  summarise(PreventionEligible = min(PreventionEligible))
 
-dateframe2 <- left_join(dateframe, disab)
+dateframe2 <- filter(dateframe, !is.na(PersonalID)) %>%
+  left_join(disab) %>%
+  left_join(pe) %>%
+  mutate(PreventionEligible = ifelse(is.na(PreventionEligible), 0, PreventionEligible))
 
-## Determine disability status for entries without one
-disab2 <- filter(dateframe2, is.na(Disabled)) %>%
-  select(-c(Disabled, PreventionEligible)) %>%
-  left_join(disab, by = "PersonalID") %>%
-  mutate(diff = abs(as.numeric(Entry.x-Entry.y)))
-disab3 <- disab2 %>%
-  group_by(PersonalID, Entry.x) %>%
-  summarise(diff = min(diff)) %>%
-  inner_join(disab2) %>%
-  ungroup() %>%
-  mutate(Entry = Entry.x) %>%
-  select(PersonalID, ProgramType, Exit, Disabled:Entry)
-dateframe3 <- anti_join(dateframe2, disab3, by = c("PersonalID", "Entry")) %>%
-  rbind(disab3)
-
-### Determine which program stays resulted in entries into housing programs
-secondentry <- dateframe3 %>%
+## Find moves from one program type to another
+secondentry <- dateframe2 %>%
   select(PersonalID:Entry)
 
-dtr <- inner_join(dateframe3, secondentry, by = "PersonalID") %>%
+dtr <- inner_join(dateframe2, secondentry, by = "PersonalID") %>%
   filter(Entry.y >= Exit,
          !is.na(Exit)) %>%
   mutate(DTR = as.numeric(Entry.y-Exit)) %>%
@@ -140,36 +127,87 @@ dtr <- inner_join(dateframe3, secondentry, by = "PersonalID") %>%
          ProgramType.x != ProgramType.y,
          ProgramType.y != "Homeless")
 
-dateframe4 <- dtr %>%
+dateframe3 <- dtr %>%
   group_by(PersonalID, Exit) %>%
   summarise(DTR = min(DTR)) %>%
   inner_join(dtr) %>%
-  rename(SecondEntry = ProgramType.y) %>%
+  mutate(SecondEntry = ProgramType.y) %>%
   select(PersonalID, Exit, SecondEntry) %>%
-  right_join(dateframe3) %>%
-  mutate(SecondEntry = ifelse(is.na(SecondEntry), "No", SecondEntry))
+  right_join(dateframe2) %>%
+  mutate(SecondEntry = ifelse(is.na(SecondEntry), "No", SecondEntry)) %>%
+  left_join(vi) %>%
+  mutate(diff = abs(as.numeric(Entry-VIDate)),
+         diff = ifelse(is.na(diff), 0, diff)) %>%
+  select(-VIType)
 
-## Determine which entries to homelessness are first for the client within two years
-hl <- filter(dateframe4, ProgramType == "Homeless")
-forfth <- filter(dateframe4, ProgramType != "Prevention") %>%
+## Find the most current available VI-SPDAT score for each entry
+dateframe4 <- dateframe3 %>%
+  group_by(PersonalID, Entry) %>%
+  summarise(diff = min(diff)) %>%
+  inner_join(dateframe3)
+
+dateframe5 <- dateframe4 %>%
+  group_by(PersonalID, Entry) %>%
+  summarise(Score = max(Score)) %>%
+  inner_join(dateframe4) %>%
+  mutate(HighBarrier = ifelse(Score >= 12, 1, 0)) %>%
+  select(-c(VIDate, diff))
+
+## Determine average number of first-time system users entering each month
+fth <- filter(dateframe5, ProgramType == "Homeless",
+              Entry >= today()-1461) %>%
   select(PersonalID, Entry, Exit)
 
-fth2 <- inner_join(hl, forfth, by = "PersonalID") %>%
-  filter(Entry.y < Entry.x,
-         is.na(Exit.y) | as.numeric(Entry.x-Exit.y) <= 730) %>%
+hl <- filter(dateframe5, ProgramType != "Prevention")
+
+fth2 <- inner_join(fth, hl, by = "PersonalID") %>%
+  filter(Exit.y < Entry.x) %>%
+  mutate(DTR = as.numeric(Entry.x-Exit.y)) %>%
+  filter(DTR <= 730) %>%
   mutate(FTH = 0,
-         Entry = Entry.x,
-         Exit = Exit.x) %>%
-  select(PersonalID, SecondEntry, ProgramType, Disabled:PreventionEligible, FTH:Exit)
+         Entry = Entry.x) %>%
+  select(PersonalID, Entry, FTH)
 fth2 <- unique(fth2)
+dateframe6 <- left_join(fth, fth2) %>%
+  mutate(FTH = ifelse(is.na(FTH), 1, FTH)) %>%
+  select(-Exit) %>%
+  right_join(dateframe5)
 
-dateframe5 <- anti_join(dateframe4, fth2, by = c("PersonalID", "Entry")) %>%
-  mutate(FTH = ifelse(ProgramType == "Homeless", 1, 0)) %>%
-  rbind(fth2)
+vifth <- dateframe6 %>%
+  filter(FTH == 1 | ProgramType == "Prevention",
+         !is.na(HighBarrier)) %>%
+  group_by(Disabled, PreventionEligible) %>%
+  summarise(HighBarrierRate = mean(HighBarrier))
 
-### Determine which clients returned to homelessness and after how many 30-day periods that return occurred;
-## Set status to disabled for PSH clients; determine which homeless clients self-resolved, i.e., exited without entering a housing program
-dateframe6 <- inner_join(dateframe5, hl, by = "PersonalID") %>%
+fthtable <- dateframe6 %>%
+  filter(FTH == 1 | ProgramType == "Prevention") %>%
+  mutate(EntryMonth = as.Date(paste(year(Entry), month(Entry), "01", sep = "-"))) %>%
+  group_by(Disabled, EntryMonth) %>%
+  summarise(FTH = n(),
+            PreventionEligible = sum(PreventionEligible)) %>%
+  filter(EntryMonth < as.Date(paste(year(today()), month(today()), "01", sep = "-")),
+         EntryMonth >= as.Date(paste(year(today())-4, month(today()), "01", sep = "-"))) %>%
+  group_by(Disabled) %>%
+  summarise(FTH = round(mean(FTH), 0),
+            PreventionEligible = round(mean(PreventionEligible), 0)) %>%
+  mutate(NotEligible = FTH-PreventionEligible) %>%
+  melt(id.vars = "Disabled") %>%
+  mutate(PreventionEligible = ifelse(variable == "PreventionEligible", 1, 0)) %>%
+  filter(variable != "FTH") %>%
+  rename(FTH = value) %>%
+  select(-variable) %>%
+  inner_join(vifth) %>%
+  mutate(HighBarrier = FTH*HighBarrierRate,
+         LowBarrier = FTH-HighBarrier) %>%
+  select(-c(HighBarrierRate, FTH)) %>%
+  melt(id.vars = c("Disabled", "PreventionEligible")) %>%
+  mutate(HighBarrier = ifelse(variable == "HighBarrier", 1, 0)) %>%
+  group_by(Disabled, HighBarrier) %>%
+  summarise(FTH = sum(value),
+            PreventionEligible = sum(value[PreventionEligible == 1]))
+
+### Determine recidivism rates
+dateframe7 <- inner_join(dateframe6, hl, by = "PersonalID") %>%
   filter(!is.na(Exit.x),
          Entry.y >= Exit.x) %>%
   mutate(DTR = as.numeric(Entry.y-Exit.x)) %>%
@@ -178,7 +216,7 @@ dateframe6 <- inner_join(dateframe5, hl, by = "PersonalID") %>%
   summarise(DTR = min(DTR)) %>%
   mutate(Exit = Exit.x) %>%
   select(-Exit.x) %>%
-  right_join(dateframe5) %>%
+  right_join(dateframe6) %>%
   mutate(Return = ifelse(is.na(Exit), NA,
                          ifelse(is.na(DTR), 0, 1)),
          ReturnTime = ifelse(Return == 1, DTR%/%30,
@@ -189,239 +227,270 @@ dateframe6 <- inner_join(dateframe5, hl, by = "PersonalID") %>%
                      ifelse(SecondEntry == "No" | ProgramType != "Homeless", 1, 0)),
          ReturnTime = ifelse(ReturnTime > 24, 24, ReturnTime))
 
-## Determine number of clients active currently in each program type
-activelist <- filter(dateframe6, is.na(Exit))
-
-## Determine clients who have exited and may return to homelessness
-inactivelist <- anti_join(dateframe6, activelist, by = "PersonalID") %>%
-  group_by(PersonalID) %>%
-  summarise(Exit = max(Exit)) %>%
-  inner_join(dateframe6) %>%
-  filter(ReturnTime < 24)
-
-## Determine rates of recidivism
-forreturn <- filter(dateframe6, SR == 1)
-returnsurv <- Surv(forreturn$ReturnTime, forreturn$Return)
-returnkmcurves <- survfit(returnsurv~ProgramType+Disabled, forreturn)
+returnsurv <- Surv(dateframe7$ReturnTime, dateframe7$Return)
+returnkmcurves <- survfit(returnsurv~ProgramType+Disabled, dateframe7)
 returnstrata <- rep(names(returnkmcurves$strata[1]), as.numeric(returnkmcurves$strata[1]))
 
-returnframe <- data.frame(Time = 1:as.numeric(returnkmcurves$strata[1]),
+returnrateframe <- data.frame(
+  Time = 1:as.numeric(returnkmcurves$strata[1]),
+  ProgramType = rep(str_remove(strsplit(returnstrata, ",")[[1]][1], "ProgramType="), as.numeric(returnkmcurves$strata[1])),
+  Disabled = as.numeric(rep(str_remove(strsplit(returnstrata, ", ")[[1]][2], "Disabled="), as.numeric(returnkmcurves$strata[1])))
+)
+
+for (n in 2:length(returnkmcurves$strata)){
+  returnstrata <- rep(names(returnkmcurves$strata[n]), as.numeric(returnkmcurves$strata[n]))
+  tempframe <- data.frame(Time = 1:as.numeric(returnkmcurves$strata[n]),
                           ProgramType = rep(str_remove(strsplit(returnstrata, ",")[[1]][1], "ProgramType="), 
-                                            as.numeric(returnkmcurves$strata[1])),
+                                            as.numeric(returnkmcurves$strata[n])),
                           Disabled = as.numeric(rep(str_remove(strsplit(returnstrata, ", ")[[1]][2], "Disabled="), 
-                                                    as.numeric(returnkmcurves$strata[1]))))
-
-for (m in 2:length(returnkmcurves$strata)){
-  returnstrata <- rep(names(returnkmcurves$strata[m]), as.numeric(returnkmcurves$strata[m]))
-  tempreturnframe <- data.frame(Time = 1:as.numeric(returnkmcurves$strata[m]),
-                                ProgramType = rep(str_remove(strsplit(names(returnkmcurves$strata)[m], ",")[[1]][1], "ProgramType="), 
-                                                  as.numeric(returnkmcurves$strata[m])),
-                                Disabled = as.numeric(rep(str_remove(strsplit(names(returnkmcurves$strata)[m], ",")[[1]][2], "Disabled="),
-                                                          as.numeric(returnkmcurves$strata[m]))))
-  returnframe <<- rbind(returnframe, tempreturnframe)
+                                                    as.numeric(returnkmcurves$strata[n]))))
+  returnrateframe <<- rbind(returnrateframe, tempframe)
 }
-returnframe$Risk <- returnkmcurves$n.risk
-returnframe$Return <- returnkmcurves$n.event
 
-dateframe6$SR = ifelse(dateframe6$SR == 1 & !is.na(dateframe6$SR), 1, 0)
-dateframe6$ExitTime <- as.numeric(dateframe6$Exit-dateframe6$Entry)%/%30
-dateframe6$ExitTime[is.na(dateframe6$ExitTime)] <- as.numeric(today()-dateframe6$Entry[is.na(dateframe6$ExitTime)])%/%30
+returnrateframe$Risk <- returnkmcurves$n.risk
+returnrateframe$Returned <- returnkmcurves$n.event
 
-spending <- read_excel("C:/Users/aflicker/Strategies To End Homelessness, Inc/CommonFiles - CommonFiles/CONTINUUM OF CARE FILES/Grants Yearly Work & Applications/2021 CoC/Scoring/Scorecard 2021.xlsx",
-                       sheet = "projects", col_types = c("text", rep("skip", 12), "numeric", rep("skip", 7)), 
-                       col_names = c("Program", "Spending"), skip = 1)
+returnrates <- returnrateframe %>%
+  group_by(ProgramType, Disabled) %>%
+  summarise(Risk = sum(Risk),
+            Returned = sum(Returned)) %>%
+  mutate(ReturnRate = Returned/Risk)
+
+##Determine what proportion of clients in each program type are high barrier
+hb <- filter(dateframe7, !is.na(HighBarrier))
+hbrate <- hb %>%
+  group_by(ProgramType, Disabled) %>%
+  summarise(HBRate = mean(HighBarrier)) %>%
+  filter(ProgramType != "PSH")
+
+hbreturnsurv <- Surv(hb$ReturnTime, hb$Return)
+hbreturncurves <- survfit(hbreturnsurv~ProgramType+Disabled+HighBarrier, hb)
+hbreturnstrata <- rep(names(hbreturncurves$strata[1]), as.numeric(hbreturncurves$strata[1]))
+
+hbreturnrateframe <- data.frame(
+  Time = 1:as.numeric(hbreturncurves$strata[1]),
+  ProgramType = rep(str_remove(strsplit(hbreturnstrata, ",")[[1]][1], "ProgramType="), as.numeric(hbreturncurves$strata[1])),
+  Disabled = as.numeric(rep(str_remove(strsplit(hbreturnstrata, ", ")[[1]][2], "Disabled="), as.numeric(hbreturncurves$strata[1]))),
+  HighBarrier = as.numeric(rep(str_remove(strsplit(hbreturnstrata, ", ")[[1]][3], "HighBarrier="), as.numeric(hbreturncurves$strata[1])))
+)
+
+for (p in 2:length(hbreturncurves$strata)){
+  hbreturnstrata <- rep(names(hbreturncurves$strata[p]), as.numeric(hbreturncurves$strata[p]))
+  tempframe <- data.frame(Time = 1:as.numeric(hbreturncurves$strata[p]),
+                          ProgramType = rep(str_remove(strsplit(hbreturnstrata, ",")[[1]][1], "ProgramType="), 
+                                            as.numeric(hbreturncurves$strata[p])),
+                          Disabled = as.numeric(rep(str_remove(strsplit(hbreturnstrata, ", ")[[1]][2], "Disabled="), 
+                                                    as.numeric(hbreturncurves$strata[p]))),
+                          HighBarrier = as.numeric(rep(str_remove(strsplit(hbreturnstrata, ", ")[[1]][3], "HighBarrier="))))
+  hbreturnrateframe <<- rbind(hbreturnrateframe, tempframe)
+}
+
+hbreturnrateframe$Risk <- hbreturncurves$n.risk
+hbreturnrateframe$Returned <- hbreturncurves$n.event
+
+hbreturnrates <- hbreturnrateframe %>%
+  group_by(ProgramType, Disabled, HighBarrier) %>%
+  summarise(Risk = sum(Risk),
+            Returned = sum(Returned)) %>%
+  mutate(ReturnRate = Returned/Risk)
+
+lbreturnrate <- filter(hbreturnrates, HighBarrier == 0) %>%
+  rename(LowBarrierRate = ReturnRate) %>%
+  select(ProgramType, Disabled, LowBarrierRate)
+
+hbreturnratio <- filter(hbreturnrates, HighBarrier == 1) %>%
+  rename(HighBarrierRate = ReturnRate) %>%
+  select(ProgramType, Disabled, HighBarrierRate) %>%
+  full_join(lbreturnrate) %>%
+  filter(ProgramType != "PSH") %>%
+  mutate(HBRatio = HighBarrierRate/LowBarrierRate,
+         HBRatio = ifelse(is.na(HBRatio), 1, HBRatio)) %>%
+  select(ProgramType, Disabled, HBRatio)
+
+returntable <- select(returnrates, ProgramType, Disabled, ReturnRate) %>%
+  left_join(hbreturnratio) %>%
+  left_join(hbrate) %>%
+  mutate(LowRate = ReturnRate/((1-HBRate)+(HBRate*HBRatio)),
+         HighRate = ifelse(ProgramType == "PSH", ReturnRate, LowRate*HBRatio)) %>%
+  select(ProgramType, Disabled, LowRate, HighRate) %>%
+  melt(id.vars = c("ProgramType", "Disabled")) %>%
+  filter(!is.na(value)) %>%
+  mutate(HighBarrier = ifelse(variable == "LowRate", 0, 1)) %>%
+  rename(ReturnRate = value) %>%
+  select(-variable)
+
+### Determine exit rates
+dateframe7$ExitTime <- as.numeric(dateframe7$Exit-dateframe7$Entry)%/%30
+dateframe7$ExitTime[is.na(dateframe7$ExitTime)] <- as.numeric(today()-dateframe7$Entry[is.na(dateframe7$Exit)])%/%30
+
+exitsurv <- Surv(dateframe7$ExitTime, dateframe7$SR)
+exitkmcurves <- survfit(exitsurv~ProgramType+Disabled, dateframe7)
+exitstrata <- rep(names(exitkmcurves$strata[1]), as.numeric(exitkmcurves$strata[1]))
+
+exitrateframe <- data.frame(
+  Time = 1:as.numeric(exitkmcurves$strata[1]),
+  ProgramType = rep(str_remove(strsplit(exitstrata, ",")[[1]][1], "ProgramType="), as.numeric(exitkmcurves$strata[1])),
+  Disabled = as.numeric(rep(str_remove(strsplit(exitstrata, ", ")[[1]][2], "Disabled="), as.numeric(exitkmcurves$strata[1])))
+)
+
+for (q in 2:length(returnkmcurves$strata)){
+  exitstrata <- rep(names(exitkmcurves$strata[q]), as.numeric(exitkmcurves$strata[q]))
+  tempframe <- data.frame(Time = 1:as.numeric(exitkmcurves$strata[q]),
+                          ProgramType = rep(str_remove(strsplit(exitstrata, ",")[[1]][1], "ProgramType="), 
+                                            as.numeric(exitkmcurves$strata[q])),
+                          Disabled = as.numeric(rep(str_remove(strsplit(exitstrata, ", ")[[1]][2], "Disabled="), 
+                                                    as.numeric(exitkmcurves$strata[q]))))
+  exitrateframe <<- rbind(exitrateframe, tempframe)
+}
+
+exitrateframe$Risk <- exitkmcurves$n.risk
+exitrateframe$Exited <- exitkmcurves$n.event
+
+exitrates <- exitrateframe %>%
+  group_by(ProgramType, Disabled) %>%
+  summarise(Risk = sum(Risk),
+            Exited = sum(Exited)) %>%
+  mutate(ExitRate = Exited/Risk)
+
+hbexit <- filter(dateframe7, !is.na(HighBarrier)) %>%
+  mutate(HighBarrier = ifelse(ProgramType == "PSH", 1, HighBarrier))
+hbexitsurv <- Surv(hbexit$ExitTime, hbexit$SR)
+hbexitcurves <- survfit(hbexitsurv~ProgramType+Disabled+HighBarrier, hbexit)
+hbexitstrata <- rep(names(hbexitcurves$strata[1]), as.numeric(hbexitcurves$strata[1]))
+
+hbexitrateframe <- data.frame(
+  Time = 1:as.numeric(hbexitcurves$strata[1]),
+  ProgramType = rep(str_remove(strsplit(hbexitstrata, ",")[[1]][1], "ProgramType="), as.numeric(hbexitcurves$strata[1])),
+  Disabled = as.numeric(rep(str_remove(strsplit(hbexitstrata, ", ")[[1]][2], "Disabled="), as.numeric(hbexitcurves$strata[1]))),
+  HighBarrier = as.numeric(rep(str_remove(strsplit(hbexitstrata, ", ")[[1]][3], "HighBarrier="), as.numeric(hbexitcurves$strata[1])))
+)
+
+for (r in 2:length(hbexitcurves$strata)){
+  hbexitstrata <- rep(names(hbexitcurves$strata[r]), as.numeric(hbexitcurves$strata[r]))
+  tempframe <- data.frame(Time = 1:as.numeric(hbexitcurves$strata[r]),
+                          ProgramType = rep(str_remove(strsplit(hbexitstrata, ",")[[1]][1], "ProgramType="), 
+                                            as.numeric(hbexitcurves$strata[r])),
+                          Disabled = as.numeric(rep(str_remove(strsplit(hbexitstrata, ", ")[[1]][2], "Disabled="), 
+                                                    as.numeric(hbexitcurves$strata[r]))),
+                          HighBarrier = as.numeric(rep(str_remove(strsplit(hbexitstrata, ", ")[[1]][3], "HighBarrier="), as.numeric(hbexitcurves$strata[r]))))
+  hbexitrateframe <<- rbind(hbexitrateframe, tempframe)
+}
+
+hbexitrateframe$Risk <- hbexitcurves$n.risk
+hbexitrateframe$Exited <- hbexitcurves$n.event
+
+hbexitrates <- hbexitrateframe %>%
+  group_by(ProgramType, Disabled, HighBarrier) %>%
+  summarise(Risk = sum(Risk),
+            Exited = sum(Exited)) %>%
+  mutate(ExitRate = Exited/Risk)
+
+lbexitrate <- filter(hbexitrates, HighBarrier == 0) %>%
+  rename(LowBarrierRate = ExitRate) %>%
+  select(ProgramType, Disabled, LowBarrierRate)
+
+hbexitratio <- filter(hbexitrates, HighBarrier == 1) %>%
+  rename(HighBarrierRate = ExitRate) %>%
+  select(ProgramType, Disabled, HighBarrierRate) %>%
+  full_join(lbexitrate) %>%
+  filter(ProgramType != "PSH") %>%
+  mutate(HBRatio = HighBarrierRate/LowBarrierRate,
+         HBRatio = ifelse(is.na(HBRatio), 1, HBRatio)) %>%
+  select(ProgramType, Disabled, HBRatio)
+
+exittable <- select(exitrates, ProgramType, Disabled, ExitRate) %>%
+  left_join(hbexitratio) %>%
+  left_join(hbrate) %>%
+  mutate(LowRate = ExitRate/((1-HBRate)+(HBRate*HBRatio)),
+         HighRate = ifelse(ProgramType == "PSH", ExitRate, LowRate*HBRatio)) %>%
+  select(ProgramType, Disabled, LowRate, HighRate) %>%
+  melt(id.vars = c("ProgramType", "Disabled")) %>%
+  filter(!is.na(value)) %>%
+  mutate(HighBarrier = ifelse(variable == "LowRate", 0, 1)) %>%
+  rename(ExitRate = value) %>%
+  select(-variable)
+
+## Count the number of people active in each program type
+active <- filter(dateframe7, is.na(Exit)) %>%
+  mutate(HighBarrier = ifelse(ProgramType == "PSH", 1, HighBarrier)) %>%
+  group_by(ProgramType, Disabled, HighBarrier) %>%
+  summarise(Active = n())
+knownhb <- filter(active, !is.na(HighBarrier))
+
+activetable <- filter(active, is.na(HighBarrier)) %>%
+  inner_join(hbrate) %>%
+  mutate(HighBarrier = Active*HBRate,
+         LowBarrier = Active-HighBarrier) %>%
+  select(-c(Active, HBRate)) %>%
+  melt(id.vars = c("ProgramType", "Disabled")) %>%
+  mutate(HighBarrier = ifelse(variable == "HighBarrier", 1, 0)) %>%
+  select(-variable) %>%
+  full_join(knownhb) %>%
+  mutate(value = ifelse(is.na(value), 0, value),
+         Active = ifelse(is.na(Active), 0, Active),
+         Active = Active+value) %>%
+  select(-value)
+
+enrolled <- filter(dateframe7, is.na(Exit))
+
+## Count the number of inactive clients who could recidivate
+inactive <- anti_join(dateframe7, enrolled, by = "PersonalID") %>%
+  group_by(PersonalID) %>%
+  summarise(Exit = max(Exit)) %>%
+  inner_join(dateframe7) %>%
+  filter(ReturnTime < 24)
+
+inactivetable <- inactive %>%
+  group_by(ProgramType, Disabled) %>%
+  summarise(Inactive = n()) %>%
+  full_join(hbrate) %>%
+  mutate(HBRate = ifelse(is.na(HBRate), 1, HBRate),
+         HighBarrier = Inactive*HBRate,
+         LowBarrier = Inactive-HighBarrier) %>%
+  select(ProgramType, Disabled, HighBarrier, LowBarrier) %>%
+  melt(id.vars = c("ProgramType", "Disabled")) %>%
+  filter(value > 0) %>%
+  mutate(HighBarrier = ifelse(variable == "HighBarrier", 1, 0)) %>%
+  rename(Inactive = value) %>%
+  select(-variable)
+
+projects <- read_excel("C:/Users/aflicker/Strategies To End Homelessness, Inc/CommonFiles - CommonFiles/CONTINUUM OF CARE FILES/Grants Yearly Work & Applications/2021 CoC/Scoring/Scorecard 2021.xlsx",
+                   sheet = "projects",
+                   col_types = c("text", rep("skip", 12), "numeric", rep("skip", 7)))
+colnames(projects) <- c("Program", "Spending")
 hmis <- read_excel("C:/Users/aflicker/Strategies To End Homelessness, Inc/CommonFiles - CommonFiles/CONTINUUM OF CARE FILES/Grants Yearly Work & Applications/2021 CoC/Scoring/Scorecard 2021.xlsx",
-                   sheet = "HMIS", col_types = c("text", "skip", "numeric", rep("skip", 109), "numeric", "numeric"), 
-                   col_names = c("Program", "ProgramType", "Individuals", "HH"), skip = 1)
-
-spending2 <- inner_join(spending, hmis) %>%
-  filter(ProgramType %in% c(3, 13)) %>%
-  mutate(ProgramType = ifelse(ProgramType == 3, "PSH", "RRH"),
-         HHSize = Individuals/HH) %>%
+                   sheet = "HMIS",
+                   col_types = c("text", "skip", "numeric", rep("skip", 109), "numeric", "numeric"),
+                   col_names = c("Program", NA, "ProgramType", rep(NA, 109), "Individuals", "HH"),
+                   skip = 1)
+cost <- inner_join(projects, hmis) %>%
+  mutate(HHSize = Individuals/HH) %>%
   filter(HHSize < 1.5)
-
 clientdates <- mod2 %>%
-  filter(Program %in% spending2$Program,
+  filter(Program %in% cost$Program,
          is.na(Exit) | Exit > "2020-07-01",
          Entry < "2021-04-01") %>%
   mutate(FakeEntry = Entry,
          FakeExit = Exit)
 clientdates$FakeEntry[clientdates$Entry < "2020-07-01"] <- "2020-07-01"
 clientdates$FakeExit[is.na(clientdates$Exit) | clientdates$Exit > "2021-04-01"] <- "2021-04-01"
-cost <- clientdates %>%
+costtable <- clientdates %>%
   mutate(ClientDays = as.numeric(FakeExit-FakeEntry)) %>%
   group_by(Program, HouseholdID) %>%
   summarise(ClientDays = mean(ClientDays)) %>%
   group_by(Program) %>%
   summarise(ClientDays = sum(ClientDays)) %>%
-  inner_join(spending2) %>%
+  filter(ClientDays > 1000) %>%
+  inner_join(cost) %>%
   group_by(ProgramType) %>%
   summarise(Spending = sum(Spending),
             ClientDays = sum(ClientDays)) %>%
   mutate(SpendingPerMonth = Spending*30/ClientDays) %>%
   select(ProgramType, SpendingPerMonth)
-
-vi <- read.csv("vispdat.csv")
-colnames(vi) <- c("PersonalID", "VIType", "VIDate", "VIScore")
-vi2 <- inner_join(dateframe6, vi)
-vispdat <- vi2 %>%
-  group_by(PersonalID) %>%
-  summarise(Entry = max(Entry)) %>%
-  inner_join(vi2) %>%
-  mutate(VIRange = ifelse(VIScore >= 12, "PSH",
-                          ifelse(VIScore >= 4, "RRH", "None"))) %>%
-  group_by(Disabled) %>%
-  summarise(PSHRate = sum(VIRange == "PSH")/n(),
-            RRHRate = sum(VIRange == "RRH")/n())
-
-### Determine number of first-time homeless clients entering each month
-fth <- dateframe6 %>%
-  filter(FTH == 1 | ProgramType == "Prevention") %>%
-  mutate(EntryMonth = as.Date(paste(year(Entry), month(Entry), "01", sep = "-"))) %>%
-  group_by(Disabled, EntryMonth) %>%
-  summarise(FTH = n(),
-            PreventionEligible = sum(PreventionEligible)) %>%
-  filter(EntryMonth < as.Date(paste(year(today()), month(today()), "01", sep = "-")),
-         EntryMonth >= as.Date(paste(year(today())-1, month(today()), "01", sep = "-"))) %>%
-  group_by(Disabled) %>%
-  summarise(FTH = round(mean(FTH), 0),
-            PreventionEligible = round(mean(PreventionEligible), 0)) %>%
-  mutate(ProgramType = "Homeless")
-  
-## Determine exit rates from programs
-forexit <- filter(dateframe6, is.na(Exit) | Exit > today()-365)
-exitsurv <- Surv(forexit$ExitTime, forexit$SR)
-exitkmcurves <- survfit(exitsurv~ProgramType+Disabled, forexit)
-exitstrata <- rep(names(exitkmcurves$strata[1]), as.numeric(exitkmcurves$strata[1]))
-  
-exitframe <- data.frame(Time = 1:as.numeric(exitkmcurves$strata[1]),
-                        ProgramType = rep(str_remove(strsplit(exitstrata, ",")[[1]][1], "ProgramType="), 
-                                          as.numeric(exitkmcurves$strata[1])),
-                        Disabled = as.numeric(rep(str_remove(strsplit(exitstrata, ", ")[[1]][2], "Disabled="), 
-                                                  as.numeric(exitkmcurves$strata[1]))))
-  
-for (n in 2:length(exitkmcurves$strata)){
-  exitstrata <- rep(names(exitkmcurves$strata[n]), as.numeric(exitkmcurves$strata[n]))
-  tempexitframe <- data.frame(Time = 1:as.numeric(exitkmcurves$strata[n]),
-                              ProgramType = rep(str_remove(strsplit(names(exitkmcurves$strata)[n], ",")[[1]][1], "ProgramType="), 
-                                                as.numeric(exitkmcurves$strata[n])),
-                              Disabled = as.numeric(rep(str_remove(strsplit(names(exitkmcurves$strata)[n], ",")[[1]][2], "Disabled="),
-                                                        as.numeric(exitkmcurves$strata[n]))))
-  exitframe <<- rbind(exitframe, tempexitframe)
-}
-exitframe$Risk <- exitkmcurves$n.risk
-exitframe$Exit <- exitkmcurves$n.event
-  
-active <- activelist %>%
-  group_by(ProgramType, Disabled) %>%
-  summarise(Active = n())
-inactive <- inactivelist %>%
-  group_by(ProgramType, Disabled) %>%
-  summarise(Inactive = n())
-    
-returnrates <- returnframe %>%
-  group_by(ProgramType, Disabled) %>%
-  summarise(Risk = sum(Risk),
-            Return = sum(Return)) %>%
-  mutate(ReturnRate = Return/Risk) %>%
-  select(ProgramType, Disabled, ReturnRate)
-
-exitrates <- exitframe %>%
-  group_by(ProgramType, Disabled) %>%
-  summarise(Risk = sum(Risk),
-            Exit = sum(Exit)) %>%
-  mutate(ExitRate = Exit/Risk) %>%
-  select(ProgramType, Disabled, ExitRate)
-
-rrh <- inner_join(dateframe6, vi) %>%
-  filter(ProgramType == "RRH",
-         Disabled == 1) %>%
-  mutate(VIRange = ifelse(VIScore > 9, "10+", "<10"),
-         FakeExit = Exit)
-rrh$FakeExit[is.na(rrh$FakeExit)] <- today()
-rrh$Exited <- ifelse(is.na(rrh$Exit), 0, 1)
-rrh$ExitTime <- as.numeric(rrh$FakeExit-rrh$Entry)%/%30
-rrhreturn <- filter(rrh, !is.na(Exit))
-rrhreturnsurv <- Surv(rrhreturn$ReturnTime, rrhreturn$Return)
-rrhreturnkmcurves <- survfit(rrhreturnsurv~VIRange, rrhreturn)
-rrhreturnstrata <- rep(names(rrhreturnkmcurves$strata[1]), as.numeric(rrhreturnkmcurves$strata[1]))
-
-rrhreturnframe <- data.frame(VIRange = rep(str_remove(strsplit(names(rrhreturnkmcurves$strata)[1], ",")[[1]][1], "VIRange="), 
-                                        as.numeric(rrhreturnkmcurves$strata[1])),
-                             Time = rrhreturnkmcurves$time[1:as.numeric(rrhreturnkmcurves$strata[1])])
-timebreaks <- c(which(rrhreturnkmcurves$time == 0), length(rrhreturnkmcurves$time)+1)
-
-for (k in 2:length(rrhreturnkmcurves$strata)){
-  rrhreturnstrata <- rep(str_remove(strsplit(names(rrhreturnkmcurves$strata)[k], ",")[[1]][1], "VIRange="), 
-                         as.numeric(rrhreturnkmcurves$strata[k]))
-  rrhreturntime <- rrhreturnkmcurves$time[timebreaks[k]:(timebreaks[k+1]-1)]
-  rrhtempreturnframe <- data.frame(VIRange = rrhreturnstrata,
-                                   Time = rrhreturntime)
-  rrhreturnframe <<- rbind(rrhreturnframe, rrhtempreturnframe)
-}
-rrhreturnframe$Risk <- rrhreturnkmcurves$n.risk
-rrhreturnframe$Return <- rrhreturnkmcurves$n.event
-rrhreturnshell <- data.frame(VIRange = rep(unique(rrhreturnframe$VIRange), each = 25),
-                             Time = 0:24)
-rrhreturnframe2 <- left_join(rrhreturnshell, rrhreturnframe) %>%
-  mutate(Risk = ifelse(is.na(Risk), lag(Risk), Risk)) %>%
-  mutate(Risk = ifelse(is.na(Risk), lag(Risk), Risk)) %>%
-  mutate(Risk = ifelse(is.na(Risk), lag(Risk), Risk),
-         Return = ifelse(is.na(Return), 0, Return)) %>%
-  group_by(VIRange) %>%
-  summarise(Risk = sum(Risk),
-            Return = sum(Return)) %>%
-  mutate(ReturnRate = Return/Risk)
-
-returnmultiplier <- rrhreturnframe2$ReturnRate[rrhreturnframe2$VIRange == "10+"]/rrhreturnframe2$ReturnRate[rrhreturnframe2$VIRange == "<10"]
-
-rrhexitsurv <- Surv(rrh$ExitTime, rrh$Exited)
-rrhexitkmcurves <- survfit(rrhexitsurv~VIRange, rrh)
-rrhexitstrata <- rep(names(rrhexitkmcurves$strata[1]), as.numeric(rrhexitkmcurves$strata[1]))
-
-rrhexitframe <- data.frame(VIRange = rep(str_remove(strsplit(names(rrhexitkmcurves$strata)[1], ",")[[1]][1], "VIRange="), 
-                                         as.numeric(rrhexitkmcurves$strata[1])),
-                        Time = rrhexitkmcurves$time[1:as.numeric(rrhexitkmcurves$strata[1])])
-exittimebreaks <- c(which(rrhexitkmcurves$time == 0), length(rrhexitkmcurves$time)+1)
-
-for (k in 2:length(rrhexitkmcurves$strata)){
-  rrhexitstrata <- rep(str_remove(strsplit(names(rrhexitkmcurves$strata)[k], ",")[[1]][1], "VIRange="), as.numeric(rrhexitkmcurves$strata[k]))
-  rrhexittime <- rrhexitkmcurves$time[exittimebreaks[k]:(exittimebreaks[k+1]-1)]
-  rrhtempexitframe <- data.frame(VIRange = rrhexitstrata,
-                                 Time = rrhexittime)
-  rrhexitframe <<- rbind(rrhexitframe, rrhtempexitframe)
-}
-rrhexitframe$Risk <- rrhexitkmcurves$n.risk
-rrhexitframe$Exited <- rrhexitkmcurves$n.event
-
-rrhexitframe2 <- left_join(rrhreturnshell, rrhexitframe)
-
-rrhexitframe3 <- rrhexitframe2 %>%
-  filter(!is.na(Risk)) %>%
-  group_by(VIRange) %>%
-  summarise(maxtime = max(Time)) %>%
-  right_join(rrhexitframe2) %>%
-  filter(Time <= maxtime) %>%
-  mutate(Risk = ifelse(is.na(Risk), lag(Risk), Risk),
-         Exited = ifelse(is.na(Exited), 0, Exited)) %>%
-  group_by(VIRange) %>%
-  summarise(Risk = sum(Risk),
-            Exited = sum(Exited)) %>%
-  mutate(ExitRate = Exited/Risk)
-exitmultiplier <- rrhexitframe3$ExitRate[rrhexitframe3$VIRange == "10+"]/rrhexitframe3$ExitRate[rrhexitframe3$VIRange == "<10"]
-
-rrhcorrection <- data.frame(RRH = sum(active$Active[active$ProgramType == "RRH"]),
-                            PSH = active$Active[active$ProgramType == "PSH"],
-                            ExitCorrex = exitmultiplier,
-                            ReturnCorrex = returnmultiplier)
-
-setwd("C:/Users/aflicker/Strategies To End Homelessness, Inc/CommonFiles - CommonFiles/CONTINUUM OF CARE FILES/Data Analysis/System model/Current/CoC/RRH correction/inputs")
-write_csv(active, "active.csv")
-write_csv(cost, "cost.csv")
-write_csv(exitrates, "exitrates.csv")
-write_csv(fth, "fth.csv")
-write_csv(inactive, "inactive.csv")
-write_csv(returnrates, "returnrates.csv")
-write_csv(vispdat, "vispdat.csv")
-write_csv(rrhcorrection, "rrhcorrection.csv")
-
+setwd("C:/Users/aflicker/Strategies To End Homelessness, Inc/CommonFiles - CommonFiles/CONTINUUM OF CARE FILES/Data Analysis/System model/Current/vulnerable/inputs")
+write_csv(activetable, "active.csv")
+write_csv(inactivetable, "inactive.csv")
+write_csv(exittable, "exitrates.csv")
+write_csv(returntable, "returnrates.csv")
+write_csv(fthtable, "fth.csv")
+write_csv(costtable, "cost.csv")
