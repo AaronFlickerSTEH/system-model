@@ -8,20 +8,24 @@ veteranrrh <- 35
 veteranth <- 101
 youthprevention <- 2
 youthpsh <- 86
-youthrrh <- 35
+youthrrh <- 34
 youthth <- 11
 
 library(tidyverse)
 library(lubridate)
 library(reshape2)
 source("U:/theme.R")
-setwd("U:/system model/No winter/inputs")
+setwd("U:/system model/No winter/survival/inputs")
 active <- read.csv("active.csv")[,-1] %>%
   mutate(ProgramPop = ClientPop)
 exitrates <- read.csv("exitrates.csv")[,-1]
-fth <- read.csv("fth.csv")[,-1]
+fth <- read.csv("fth.csv")[,-1] %>%
+  mutate(Months = 0,
+         ProgramType = "Homeless")
 inactive <- read.csv("inactive.csv")[,-1]
 returnrates <- read.csv("returnrates.csv")[,-1]
+base <- read.csv("base.csv")[,-1] %>%
+  mutate(prediction = "baseline")
 
 ProgramType <- c("Prevention", "PSH", "RRH", "TH")
 Adult <- c(adultprevention, adultpsh, adultrrh, adultth)
@@ -32,10 +36,11 @@ capacity <- data.frame(ProgramType, Adult, Veteran, Youth) %>%
   mutate(ProgramPop = variable,
          Capacity = value) %>%
   select(ProgramType, ProgramPop, Capacity)
+months <- 1:60
 
-homelesstotal <- rep(NA, 2)
-homelessyouth <- rep(NA, 2)
-homelessvets <- rep(NA, 2)
+homelesstotal <- rep(NA, length(months)+1)
+homelessyouth <- rep(NA, length(months)+1)
+homelessvets <- rep(NA, length(months)+1)
 homeless <- active %>%
   filter(ProgramType == "Homeless") %>%
   mutate(Exits = 0)
@@ -46,28 +51,53 @@ homelessnums <- homeless %>%
 homelesstotal[1] <- sum(homelessnums$Total)
 homelessyouth[1] <- sum(homelessnums$Youth)
 homelessvets[1] <- sum(homelessnums$Veterans)
-rm(homelessnums)
 
-prevententry <- function(df){
-  for (i in 1:nrow(df)){
-    df$Entries[i] = ifelse(df$Rank[i] == 1,
-                           ifelse(df$RunPE[i] <= df$Openings[i], df$PreventionEligible[i], df$Openings[i]),
-                           ifelse(df$RunPE[i] <= df$Openings[i], df$PreventionEligible[i],
-                                  ifelse(df$RunPE[i-1] <= df$Openings[i], df$Openings[i]-df$RunPE[i-1], 0)))
+specialentry <- function(df){
+  if("PreventionEligible" %in% colnames(df)){
+    x <- df %>% group_by(ProgramPop) %>%
+    mutate(Rank = 1:n(),
+           RunPE = cumsum(PreventionEligible),
+           Entries = ifelse(Rank == 1,
+                            ifelse(Openings > PreventionEligible, PreventionEligible, Openings),
+                            ifelse(RunPE <= Openings, PreventionEligible,
+                                   ifelse(lag(RunPE) < Openings, Openings-lag(RunPE), 0))))
   }
-  df
+  else{
+    x <- df %>%
+      group_by(ProgramPop) %>%
+      mutate(Rank = 1:n(),
+             RunActive = cumsum(Active),
+             Entries = ifelse(Rank == 1,
+                              ifelse(Openings > Active, Active, Openings),
+                              ifelse(RunActive <= Openings, Active,
+                                     ifelse(lag(RunActive) < Openings, Openings-lag(RunActive), 0))))
+  }
+  data.frame(x)
 }
+
 entry <- function(df){
-  for (i in 1:nrow(df)){
-    df$Entries[i] = ifelse(df$Rank[i] == 1,
-                           ifelse(df$RunActive[i] <= df$Openings[i], df$Active[i], df$Openings[i]),
-                           ifelse(df$RunActive[i] <= df$Openings[i], df$Active[i],
-                                  ifelse(df$RunActive[i-1] <= df$Openings[i], df$Openings[i]-df$RunActive[i-1], 0)))
+  if("PreventionEligible" %in% colnames(df)){
+    x <- df %>% group_by(ProgramPop) %>%
+      mutate(Rank = 1:n(),
+             RunPE = cumsum(PreventionEligible),
+             Entries = ifelse(Rank == 1,
+                              ifelse(Openings > PreventionEligible, PreventionEligible, Openings),
+                              ifelse(RunPE <= Openings, PreventionEligible,
+                                     ifelse(lag(RunPE) < Openings, Openings-lag(RunPE), 0))))
   }
-  df
+  else{
+    x <- df %>%
+      mutate(Rank = 1:n(),
+             RunActive = cumsum(Active),
+             Entries = ifelse(Rank == 1,
+                              ifelse(Openings > Active, Active, Openings),
+                              ifelse(RunActive <= Openings, Active,
+                                     ifelse(lag(RunActive) < Openings, Openings-lag(RunActive), 0))))
+  }
+  data.frame(x)
 }
 
-for (i in 1:60){
+for (i in months){
   nonhomeless <- filter(active, ProgramType != "Homeless")
   homeless <- active %>%
     filter(ProgramType == "Homeless") %>%
@@ -76,13 +106,12 @@ for (i in 1:60){
     mutate(Exits = NA)
   for (j in 1:nrow(activeafterprogramexits)){
     set.seed(j)
-    activeafterprogramexits$Exits[j] <- sum(runif(activeafterprogramexits$Active[j]) < activeafterprogramexits$ExitRate[j])
+    activeafterprogramexits$Exits[j] <- sum(runif(activeafterprogramexits$Active[j]) < activeafterprogramexits$ExitProb[j])
   }
   activeafterprogramexits <- activeafterprogramexits %>%
     mutate(Active = Active-Exits) %>%
-    select(ProgramType, ClientPop, ProgramPop, Disabled, Active, Exits) %>%
+    select(-ExitProb) %>%
     rbind(homeless)
-  rm(active)
   programexits <- activeafterprogramexits %>%
     group_by(ProgramType, ClientPop, Disabled) %>%
     summarise(Exits = sum(Exits)) %>%
@@ -107,13 +136,10 @@ for (i in 1:60){
            Reentries = as.numeric(value)) %>%
     group_by(ClientPop, Disabled, ProgramType) %>%
     summarise(Reentries = sum(Reentries)) %>%
+    mutate(Months = 0) %>%
     right_join(activeafterprogramexits) %>%
-    mutate(Reentries = ifelse(is.na(Reentries), 0, Reentries),
-           Active = Active+Reentries) %>%
-    select(ProgramType, ClientPop, ProgramPop, Disabled, Active)
-  rm(activeafterprogramexits)
-  rm(nothexits)
-  rm(thexits)
+    mutate(Reentries = ifelse(is.na(Reentries), 0, Reentries)) %>%
+    select(-Exits)
   inactiveafterreentries <- programexits %>%
     mutate(Months = 0,
            Exits = Exits-RRH-PSH) %>%
@@ -121,10 +147,9 @@ for (i in 1:60){
     right_join(inactive) %>%
     mutate(Exits = ifelse(is.na(Exits), 0, Exits),
            Inactive = ifelse(is.na(Inactive), 0, Inactive))
-  rm(inactive)
   extracapacity <- activeafterreentries %>%
     group_by(ProgramType, ProgramPop) %>%
-    summarise(Active = sum(Active)) %>%
+    summarise(Active = sum(Active)+sum(Reentries)) %>%
     full_join(capacity) %>%
     mutate(Openings = Capacity-Active,
            ForcedExits = ifelse(Openings < 0, abs(Openings), 0)) %>%
@@ -136,7 +161,7 @@ for (i in 1:60){
       select(ProgramType, ProgramPop, ForcedExits) %>%
       right_join(activeafterreentries) %>%
       mutate(ForcedExits = ifelse(is.na(ForcedExits), 0, ForcedExits))
-    forcedexits <- forcedexits[order(forcedexits$ProgramType, forcedexits$ProgramPop, forcedexits$Disabled),]
+    forcedexits <- forcedexits[order(forcedexits$ProgramType, forcedexits$ClientPop, -forcedexits$Months, forcedexits$Disabled),]
     forcedexits <- forcedexits %>%
       group_by(ProgramType, ProgramPop) %>%
       mutate(RunActive = cumsum(Active),
@@ -152,7 +177,7 @@ for (i in 1:60){
     }
     activeafterforcedexits <- forcedexits %>%
       mutate(Active = Active-ForcedToExit) %>%
-      select(ProgramType, ProgramPop, ClientPop, Disabled, Reentries, Active)
+      select(ProgramType, ProgramPop, ClientPop, Disabled, Reentries, Months, Active)
     inactiveafterforcedexits <- forcedexits %>%
       group_by(ProgramType, ClientPop, Disabled) %>%
       summarise(ForcedExits = sum(ForcedToExit)) %>%
@@ -162,63 +187,47 @@ for (i in 1:60){
       mutate(ForcedExits = ifelse(is.na(ForcedExits), 0, ForcedExits),
              Exits = Exits+ForcedExits) %>%
       select(ProgramType, ClientPop, Disabled, Months, Exits, Inactive)
-    rm(forcedexits)
-  }
-  if(sum(extracapacity$Openings < 0) == 0){
+  }else{
     inactiveafterforcedexits <- inactiveafterreentries
     activeafterforcedexits <- activeafterreentries
   }
-  rm(inactiveafterreentries)
-  rm(activeafterreentries)
   activeafterfth <- activeafterforcedexits %>%
     left_join(fth) %>%
     mutate(FTH = ifelse(is.na(FTH), 0, FTH),
-           PreventionEligible = ifelse(is.na(PreventionEligible), 0, PreventionEligible),
-           Active = Active+FTH) %>%
-    select(-FTH)
-  rm(activeafterforcedexits)
+           PreventionEligible = ifelse(is.na(PreventionEligible), 0, PreventionEligible))
   preventspecialcapacity <- extracapacity %>%
     filter(ProgramType == "Prevention",
            ProgramPop != "Adult",
            Openings > 0)
   if(nrow(preventspecialcapacity) > 0){
     preventspecialcapacity <- activeafterfth %>%
-      filter(PreventionEligible > 0) %>%
+      filter(FTH > 0) %>%
       right_join(preventspecialcapacity, by = c("ClientPop" = "ProgramPop"))
     preventspecialcapacity <- preventspecialcapacity[order(preventspecialcapacity$ClientPop, -preventspecialcapacity$Disabled),]
-    preventspecialcapacity <- preventspecialcapacity %>%
-      group_by(ProgramPop) %>%
-      mutate(Rank = 1:n(),
-             RunPE = cumsum(PreventionEligible))
-    preventspecialcapacity <- prevententry(preventspecialcapacity)
+    preventspecialcapacity <- specialentry(preventspecialcapacity)
     preventspecialactive1 <- preventspecialcapacity %>%
       mutate(ProgramType = ProgramType.y,
              Exits = 0) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits)
+      select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits)
     preventspecialactive2 <- preventspecialcapacity %>%
       mutate(ProgramType = ProgramType.x,
              Exits = Entries,
              Entries = 0) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits)
+      select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits)
     preventspecialactive <- rbind(preventspecialactive1, preventspecialactive2)
     activeafterpreventspecial <- activeafterfth %>%
       left_join(preventspecialactive) %>%
       mutate(Entries = ifelse(is.na(Entries), 0, Entries),
              Exits = ifelse(is.na(Exits), 0, Exits),
-             Active = Active-Exits+Entries,
-             PreventionEligible = PreventionEligible-Exits) %>%
-      select(ProgramType, ClientPop, ProgramPop, Disabled, Active, PreventionEligible)
-    rm(preventspecialactive)
-    rm(preventspecialactive1)
-    rm(preventspecialactive2)
-  }
-  if(nrow(preventspecialcapacity) == 0){
+             FTH = FTH-Exits,
+             PreventionEligible = PreventionEligible-Exits,
+             Entries = Entries+Reentries) %>%
+      select(ClientPop, Disabled, ProgramType, Entries, Months, ProgramPop, Active, FTH, PreventionEligible)
+  }else{
     activeafterpreventspecial <- activeafterfth %>%
       mutate(Entries = Reentries) %>%
       select(-Reentries)
   }
-  rm(activeafterfth)
-  rm(preventspecialcapacity)
   preventcapacity <- extracapacity %>%
     filter(ProgramType == "Prevention",
            ProgramPop == "Adult",
@@ -230,36 +239,31 @@ for (i in 1:60){
       mutate(Openings = openings,
              ProgramPop = "Adult")
     preventactive <- preventactive[order(-preventactive$Disabled, preventactive$ClientPop),]
-    preventactive$Rank <- 1:nrow(preventactive)
-    preventactive$RunPE <- cumsum(preventactive$PreventionEligible)
-    preventactive <- prevententry(preventactive)
+    preventactive <- entry(preventactive)
     preventactive1 <- data.frame(preventactive) %>%
       mutate(ProgramType = "Prevention",
              Exits = 0) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits)
-    preventactive2 <- preventactive %>%
+      select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits)
+    preventactive2 <- data.frame(preventactive) %>%
       mutate(Exits = Entries,
              Entries = 0,
              ProgramPop = ClientPop) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits)
+      select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits)
     preventactive <- rbind(preventactive1, preventactive2)
-    activeafterprevent <- activeafterpreventspecial %>%
-      full_join(preventactive, by = c("ProgramType", "ProgramPop", "ClientPop", "Disabled")) %>%
+    activeafterprevent <- data.frame(activeafterpreventspecial %>%
+      full_join(preventactive, by = c("ProgramType", "ProgramPop", "ClientPop", "Disabled", "Months")) %>%
       mutate(Active = ifelse(is.na(Active), 0, Active),
-             Entries = ifelse(is.na(Entries), 0, Entries),
+             FTH = ifelse(is.na(FTH), 0, FTH),
+             Entries.x = ifelse(is.na(Entries.x), 0, Entries.x),
+             Entries.y = ifelse(is.na(Entries.y), 0, Entries.y),
              Exits = ifelse(is.na(Exits), 0, Exits),
-             Active = Active-Exits+Entries) %>%
-      filter(ProgramPop == ClientPop | Active > 0) %>%
-      select(ProgramType, ClientPop, ProgramPop, Disabled, Active)
-    rm(preventactive)
-    rm(preventactive1)
-    rm(preventactive2)
-  }
-  if(nrow(preventcapacity) == 0){
+             Entries = Entries.x+Entries.y,
+             FTH = FTH-Exits) %>%
+      filter(ProgramPop == ClientPop | Active > 0 | FTH > 0 | Entries > 0) %>%
+      select(ClientPop, Disabled, ProgramType, Months, ProgramPop, Active, FTH, Entries))
+  }else{
     activeafterprevent <- select(activeafterpreventspecial, -PreventionEligible)
   }
-  rm(activeafterpreventspecial)
-  rm(preventcapacity)
   pshspecialcapacity <- extracapacity %>%
     filter(ProgramType == "PSH",
            ProgramPop != "Adult",
@@ -269,37 +273,32 @@ for (i in 1:60){
       filter(Active > 0,
              ProgramType == "Homeless",
              Disabled == 1) %>%
-      right_join(pshspecialcapacity, by = "ProgramPop") %>%
-      group_by(ProgramPop) %>%
-      mutate(Rank = 1:n(),
-             RunActive = cumsum(Active))
-    pshspecialactive <- entry(pshspecialactive)
+      right_join(pshspecialcapacity, by = "ProgramPop")
+    pshspecialactive <- pshspecialactive[order(pshspecialactive$ClientPop, -pshspecialactive$Months),]
+    pshspecialactive <- specialentry(pshspecialactive)
     pshspecialactive1 <- pshspecialactive %>%
       mutate(ProgramType = ProgramType.y) %>%
       group_by(ProgramType, ProgramPop, ClientPop, Disabled) %>%
       summarise(Entries = sum(Entries),
-                Exits = 0)
+                Exits = 0,
+                Months = 0)
     pshspecialactive2 <- pshspecialactive %>%
       mutate(ProgramType = ProgramType.x,
              Exits = Entries,
              Entries = 0) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits)
-    pshspecialactive <- rbind(pshspecialactive1, pshspecialactive2)
+      select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits)
+    pshspecialactive <- rbind(data.frame(pshspecialactive1), pshspecialactive2)
     activeafterpshspecial <- activeafterprevent %>%
-      left_join(pshspecialactive, by = c("ProgramType", "ProgramPop", "Disabled", "ClientPop")) %>%
-      mutate(Entries = ifelse(is.na(Entries), 0, Entries),
+      left_join(pshspecialactive, by = c("ProgramType", "ProgramPop", "Disabled", "Months", "ClientPop")) %>%
+      mutate(Entries.x = ifelse(is.na(Entries.x), 0, Entries.x),
+             Entries.y = ifelse(is.na(Entries.y), 0, Entries.y),
              Exits = ifelse(is.na(Exits), 0, Exits),
-             Active = Active-Exits+Entries) %>%
-      select(ProgramType, ClientPop, ProgramPop, Disabled, Active)
-    rm(pshspecialactive)
-    rm(pshspecialactive1)
-    rm(pshspecialactive2)
-  }
-  if(nrow(pshspecialcapacity) == 0){
+             Entries = Entries.x+Entries.y,
+             Active = Active-Exits) %>%
+      select(ClientPop, Disabled, ProgramType, Months, ProgramPop, Active, FTH, Entries)
+  }else{
     activeafterpshspecial <- activeafterprevent
   }
-  rm(activeafterprevent)
-  rm(pshspecialcapacity)
   pshcapacity <- extracapacity %>%
     filter(ProgramType == "PSH",
            ProgramPop == "Adult")
@@ -310,37 +309,31 @@ for (i in 1:60){
              ProgramType == "Homeless",
              Disabled == 1) %>%
       mutate(Openings = pshopenings)
-    pshactive <- data.frame(pshactive) %>%
-      mutate(Rank = 1:n(),
-             RunActive = cumsum(Active))
-    pshactive <- entry(pshactive)
+    pshactive <- pshactive[order(-pshactive$Months, pshactive$ClientPop),]
+    pshactive <- data.frame(entry(pshactive))
     pshactive1 <- pshactive %>%
       mutate(ProgramType = "PSH") %>%
       group_by(ProgramType, ProgramPop, ClientPop, Disabled) %>%
       summarise(Entries = sum(Entries),
-                Exits = 0) %>%
+                Exits = 0,
+                Months = 0) %>%
       filter(Entries > 0)
     pshactive2 <- pshactive %>%
       mutate(Exits = Entries,
              Entries = 0) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits) %>%
+      select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits) %>%
       filter(Exits > 0)
     pshactive <- rbind(data.frame(pshactive1), pshactive2)
     activeafterpsh <- activeafterpshspecial %>%
-      left_join(pshactive, by = c("ProgramType", "ProgramPop", "Disabled", "ClientPop")) %>%
-      mutate(Entries = ifelse(is.na(Entries), 0, Entries),
+      left_join(pshactive, by = c("ProgramType", "ProgramPop", "Disabled", "Months", "ClientPop")) %>%
+      mutate(Entries.y = ifelse(is.na(Entries.y), 0, Entries.y),
              Exits = ifelse(is.na(Exits), 0, Exits),
-             Active = Active-Exits+Entries) %>%
-      select(ProgramType, ClientPop, ProgramPop, Disabled, Active)
-    rm(pshactive)
-    rm(pshactive1)
-    rm(pshactive2)
-  }
-  if(pshopenings <= 0){
+             Entries = Entries.x+Entries.y,
+             Active = Active-Exits) %>%
+      select(ClientPop, Disabled, ProgramType, Months, ProgramPop, Active, FTH, Entries)
+  }else{
     activeafterpsh <- activeafterpshspecial
   }
-  rm(activeafterpshspecial)
-  rm(pshcapacity)
   rrhspecialcapacity <- extracapacity %>%
     filter(ProgramType == "RRH",
            ProgramPop != "Adult",
@@ -350,38 +343,30 @@ for (i in 1:60){
       filter(Active > 0,
              ProgramType == "Homeless") %>%
       right_join(rrhspecialcapacity, by = "ProgramPop")
-    rrhspecialactive <- rrhspecialactive[order(rrhspecialactive$ClientPop, -rrhspecialactive$Disabled),]
-    rrhspecialactive <- rrhspecialactive %>%
-      group_by(ProgramPop) %>%
-      mutate(Rank = 1:n(),
-             RunActive = cumsum(Active))
-    rrhspecialactive <- entry(rrhspecialactive)
+    rrhspecialactive <- rrhspecialactive[order(rrhspecialactive$ClientPop, -rrhspecialactive$Months, -rrhspecialactive$Disabled),]
+    rrhspecialactive <- specialentry(rrhspecialactive)
     rrhspecialactive1 <- rrhspecialactive %>%
       mutate(ProgramType = ProgramType.y) %>%
       group_by(ProgramType, ProgramPop, ClientPop, Disabled) %>%
       summarise(Entries = sum(Entries),
-                Exits = 0)
+                Exits = 0,
+                Months = 0)
     rrhspecialactive2 <- rrhspecialactive %>%
       mutate(ProgramType = ProgramType.x,
              Exits = Entries,
              Entries = 0) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits)
-    rrhspecialactive <- rbind(rrhspecialactive1, rrhspecialactive2)
+      select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits)
+    rrhspecialactive <- rbind(data.frame(rrhspecialactive1), rrhspecialactive2)
     activeafterrrhspecial <- activeafterpsh %>%
-      left_join(rrhspecialactive, by = c("ProgramType", "ProgramPop", "Disabled", "ClientPop")) %>%
-      mutate(Entries = ifelse(is.na(Entries), 0, Entries),
+      left_join(rrhspecialactive, by = c("ProgramType", "ProgramPop", "Disabled", "Months", "ClientPop")) %>%
+      mutate(Entries.y = ifelse(is.na(Entries.y), 0, Entries.y),
              Exits = ifelse(is.na(Exits), 0, Exits),
-             Active = Active-Exits+Entries) %>%
-      select(ProgramType, ClientPop, ProgramPop, Disabled, Active)
-    rm(rrhspecialactive)
-    rm(rrhspecialactive1)
-    rm(rrhspecialactive2)
-  }
-  if(nrow(rrhspecialcapacity) == 0){
+             Entries = Entries.x+Entries.y,
+             Active = Active-Exits) %>%
+      select(ClientPop, Disabled, ProgramType, Months, ProgramPop, Active, FTH, Entries)
+  }else{
     activeafterrrhspecial <- activeafterpsh
   }
-  rm(activeafterpsh)
-  rm(rrhspecialcapacity)
   rrhcapacity <- extracapacity %>%
     filter(ProgramType == "RRH",
            ProgramPop == "Adult")
@@ -391,38 +376,31 @@ for (i in 1:60){
       filter(Active > 0,
              ProgramType == "Homeless") %>%
       mutate(Openings = rrhopenings)
-    rrhactive <- rrhactive[order(-rrhactive$Disabled, rrhactive$ClientPop),]
-    rrhactive <- data.frame(rrhactive) %>%
-      mutate(Rank = 1:n(),
-             RunActive = cumsum(Active))
-    rrhactive <- entry(rrhactive)
+    rrhactive <- rrhactive[order(-rrhactive$Months, -rrhactive$Disabled, rrhactive$ClientPop),]
+    rrhactive <- data.frame(entry(rrhactive))
     rrhactive1 <- rrhactive %>%
       mutate(ProgramType = "RRH") %>%
       group_by(ProgramType, ProgramPop, ClientPop, Disabled) %>%
       summarise(Entries = sum(Entries),
-                Exits = 0) %>%
+                Exits = 0,
+                Months = 0) %>%
       filter(Entries > 0)
     rrhactive2 <- rrhactive %>%
       mutate(Exits = Entries,
              Entries = 0) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits) %>%
+      select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits) %>%
       filter(Exits > 0)
     rrhactive <- rbind(data.frame(rrhactive1), rrhactive2)
     activeafterrrh <- activeafterrrhspecial %>%
-      left_join(rrhactive, by = c("ProgramType", "ProgramPop", "Disabled", "ClientPop")) %>%
-      mutate(Entries = ifelse(is.na(Entries), 0, Entries),
+      left_join(rrhactive, by = c("ProgramType", "ProgramPop", "Disabled", "Months", "ClientPop")) %>%
+      mutate(Entries.y = ifelse(is.na(Entries.y), 0, Entries.y),
              Exits = ifelse(is.na(Exits), 0, Exits),
-             Active = Active-Exits+Entries) %>%
-      select(ProgramType, ClientPop, ProgramPop, Disabled, Active)
-    rm(rrhactive)
-    rm(rrhactive1)
-    rm(rrhactive2)
-  }
-  if(rrhopenings <= 0){
+             Entries = Entries.x+Entries.y,
+             Active = Active-Exits) %>%
+      select(ClientPop, Disabled, ProgramType, Months, ProgramPop, Active, FTH, Entries)
+  }else{
     activeafterrrh <- activeafterrrhspecial
   }
-  rm(activeafterrrhspecial)
-  rm(rrhcapacity)
   thspecialcapacity <- extracapacity %>%
     filter(ProgramType == "TH",
            ProgramPop != "Adult",
@@ -432,38 +410,32 @@ for (i in 1:60){
       filter(Active > 0,
              ProgramType == "Homeless") %>%
       inner_join(thspecialcapacity, by = "ProgramPop")
-    thspecialactive <- thspecialactive[order(thspecialactive$ClientPop, -thspecialactive$Disabled),]
-    thspecialactive <- thspecialactive %>%
-      group_by(ProgramPop) %>%
-      mutate(Rank = 1:n(),
-             RunActive = cumsum(Active))
-    thspecialactive <- entry(thspecialactive)
-    thspecialactive1 <- thspecialactive %>%
-      mutate(ProgramType = ProgramType.y) %>%
-      group_by(ProgramType, ProgramPop, ClientPop, Disabled) %>%
-      summarise(Entries = sum(Entries),
-                Exits = 0)
-    thspecialactive2 <- thspecialactive %>%
-      mutate(ProgramType = ProgramType.x,
-             Exits = Entries,
-             Entries = 0) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits)
-    thspecialactive <- rbind(thspecialactive1, thspecialactive2)
-    activeafterthspecial <- activeafterrrh %>%
-      left_join(thspecialactive, by = c("ProgramType", "ProgramPop", "Disabled", "ClientPop")) %>%
-      mutate(Entries = ifelse(is.na(Entries), 0, Entries),
-             Exits = ifelse(is.na(Exits), 0, Exits),
-             Active = Active-Exits+Entries) %>%
-      select(ProgramType, ClientPop, ProgramPop, Disabled, Active)
-    rm(thspecialactive)
-    rm(thspecialactive1)
-    rm(thspecialactive2)
-  }
-  if(nrow(thspecialcapacity) == 0){
+    if(nrow(thspecialactive) > 0){
+      thspecialactive <- thspecialactive[order(thspecialactive$ClientPop, -thspecialactive$Months, -thspecialactive$Disabled),]
+      thspecialactive <- data.frame(specialentry(thspecialactive))
+      thspecialactive1 <- thspecialactive %>%
+        mutate(ProgramType = ProgramType.y) %>%
+        group_by(ProgramType, ProgramPop, ClientPop, Disabled) %>%
+        summarise(Entries = sum(Entries),
+                  Exits = 0,
+                  Months = 0)
+      thspecialactive2 <- thspecialactive %>%
+        mutate(ProgramType = ProgramType.x,
+               Exits = Entries,
+               Entries = 0) %>%
+        select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits)
+      thspecialactive <- rbind(data.frame(thspecialactive1), thspecialactive2)
+      activeafterthspecial <- activeafterrrh %>%
+        left_join(thspecialactive, by = c("ProgramType", "ProgramPop", "Disabled", "Months", "ClientPop")) %>%
+        mutate(Entries.y = ifelse(is.na(Entries.y), 0, Entries.y),
+               Exits = ifelse(is.na(Exits), 0, Exits),
+               Entries = Entries.x+Entries.y,
+               Active = Active-Exits) %>%
+        select(ClientPop, Disabled, ProgramType, Months, ProgramPop, Active, FTH, Entries)
+    }else{activeafterthspecial <- activeafterrrh}
+  }else{
     activeafterthspecial <- activeafterrrh
   }
-  rm(activeafterrrh)
-  rm(thspecialcapacity)
   thcapacity <- extracapacity %>%
     filter(ProgramType == "TH",
            ProgramPop == "Adult")
@@ -473,115 +445,158 @@ for (i in 1:60){
       filter(Active > 0,
              ProgramType == "Homeless") %>%
       mutate(Openings = thopenings)
-    thactive <- thactive[order(-thactive$Disabled, thactive$ClientPop),]
-    thactive <- data.frame(thactive) %>%
-      mutate(Rank = 1:n(),
-             RunActive = cumsum(Active))
-    thactive <- entry(thactive)
+    thactive <- thactive[order(-thactive$Months, -thactive$Disabled, thactive$ClientPop),]
+    thactive <- data.frame(entry(thactive))
     thactive1 <- thactive %>%
       mutate(ProgramType = "TH") %>%
       group_by(ProgramType, ProgramPop, ClientPop, Disabled) %>%
       summarise(Entries = sum(Entries),
-                Exits = 0) %>%
+                Exits = 0,
+                Months = 0) %>%
       filter(Entries > 0)
     thactive2 <- thactive %>%
       mutate(Exits = Entries,
              Entries = 0) %>%
-      select(ProgramType, ProgramPop, Disabled, ClientPop, Entries, Exits) %>%
+      select(ProgramType, ProgramPop, Disabled, ClientPop, Months, Entries, Exits) %>%
       filter(Exits > 0)
     thactive <- rbind(data.frame(thactive1), thactive2)
     activeafterth <- activeafterthspecial %>%
-      left_join(thactive, by = c("ProgramType", "ProgramPop", "Disabled", "ClientPop")) %>%
-      mutate(Entries = ifelse(is.na(Entries), 0, Entries),
+      left_join(thactive, by = c("ProgramType", "ProgramPop", "Disabled", "Months", "ClientPop")) %>%
+      mutate(Entries.y = ifelse(is.na(Entries.y), 0, Entries.y),
              Exits = ifelse(is.na(Exits), 0, Exits),
-             Active = Active-Exits+Entries) %>%
-      select(ProgramType, ClientPop, ProgramPop, Disabled, Active)
-    rm(thactive)
-    rm(thactive1)
-    rm(thactive2)
-  }
-  if(thopenings <= 0){
+             Entries = Entries.x+Entries.y,
+             Active = Active-Exits) %>%
+      select(ClientPop, Disabled, ProgramType, Months, ProgramPop, Active, FTH, Entries)
+  }else{
     activeafterth <- activeafterthspecial
   }
-  rm(activeafterthspecial)
-  rm(thcapacity)
   sr <- activeafterth %>%
     filter(ProgramType == "Homeless",
-           Active > 0) %>%
-    left_join(exitrates)
+           Active > 0 | FTH > 0) %>%
+    left_join(exitrates) %>%
+    mutate(ActiveExits = as.numeric(NA),
+           FTHExits = as.numeric(NA))
   if(nrow(sr) > 0){
     for (m in 1:nrow(sr)){
       set.seed(m+200)
-      sr$Exits[m] <- sum(runif(sr$Active[m]) < sr$ExitRate[m])
+      sr$ActiveExits[m] <- sum(runif(sr$Active[m]) < sr$ExitProb[m])
+      sr$FTHExits[m] <- sum(runif(sr$FTH[m]) < sr$ExitProb[m])
     }
-    activeaftersr <- left_join(activeafterth, sr, by = c("ProgramType", "ProgramPop", "ClientPop", "Disabled", "Active")) %>%
-      mutate(Exits = ifelse(is.na(Exits), 0, Exits),
-             Active = Active-Exits) %>%
-      select(ProgramType, ClientPop, ProgramPop, Disabled, Active)
+    activeaftersr <- left_join(activeafterth, sr, by = c("ProgramType", "ProgramPop", "ClientPop", "Disabled", "Months", "Active",
+                                                         "FTH")) %>%
+      mutate(ActiveExits = ifelse(is.na(ActiveExits), 0, ActiveExits),
+             FTHExits = ifelse(is.na(FTHExits), 0, FTHExits),
+             FTH = FTH-FTHExits,
+             Active = Active-ActiveExits,
+             Entries = Entries.x) %>%
+      select(ClientPop, Disabled, ProgramType, Months, ProgramPop, Active, FTH, Entries)
     inactiveaftersr <- sr %>%
-      mutate(Months = 0) %>%
+      mutate(Exits = ActiveExits+FTHExits) %>%
+      group_by(ProgramType, ClientPop, Disabled) %>%
+      summarise(Exits = sum(Exits),
+                Months = 0) %>%
       right_join(inactiveafterforcedexits, by = c("ProgramType", "ClientPop", "Disabled", "Months")) %>%
       mutate(Exits.x = ifelse(is.na(Exits.x), 0, Exits.x),
              Exits = Exits.x+Exits.y) %>%
       select(ProgramType, ClientPop, Disabled, Months, Inactive, Exits)
-  }
-  if(nrow(sr) == 0){
+  }else{
     activeaftersr <- activeafterth
     inactiveaftersr <- inactiveafterforcedexits
   }
-  rm(activeafterth)
-  rm(inactiveafterforcedexits)
   recid <- left_join(inactiveaftersr, returnrates) %>%
-    mutate(InactiveRecid = NA,
-           ExitRecid = NA)
+    mutate(Recid = NA)
   for (n in 1:nrow(recid)){
     set.seed(n+300)
-    recid$InactiveRecid[n] <- sum(runif(recid$Inactive[n]) < recid$ReturnRate[n])
-    recid$ExitRecid[n] <- sum(runif(recid$Exits[n]) < recid$ReturnRate[n])
+    recid$Recid[n] <- sum(runif(recid$Inactive[n]) < recid$ReturnProb[n])
   }
   inactiveafterrecid1 <- recid %>%
-    mutate(Inactive = Inactive-InactiveRecid,
+    mutate(Inactive = Inactive-Recid,
            Months = Months+1) %>%
     filter(Months < 24) %>%
     select(ProgramType, ClientPop, Disabled, Months, Inactive)
   inactiveafterrecid2 <- recid %>%
-    mutate(Inactive = Exits-ExitRecid) %>%
+    mutate(Inactive = Exits) %>%
     filter(Months == 0) %>%
     select(ProgramType, ClientPop, Disabled, Months, Inactive)
-  inactive <- rbind(inactiveafterrecid1, inactiveafterrecid2)
-  rm(inactiveafterrecid1)
-  rm(inactiveafterrecid2)
-  active <- data.frame(recid) %>%
+  inactiveafterrecid <- rbind(inactiveafterrecid1, inactiveafterrecid2)
+  inactiveageout <- data.frame(inactiveafterrecid) %>%
+    mutate(AgeOut = NA)
+  for (o in 1:nrow(inactiveageout)){
+    set.seed(o+400)
+    inactiveageout$AgeOut[o] = ifelse(inactiveageout$ClientPop[o] == "Youth", sum(runif(inactiveageout$Inactive[o]) > 71/72), 0)
+  }
+  inactiveageout$Inactive <- inactiveageout$Inactive-inactiveageout$AgeOut
+  inactive <- inactiveageout %>%
+    filter(AgeOut > 0) %>%
+    mutate(ClientPop = "Adult",
+           AgeIn = AgeOut) %>%
+    select(ProgramType, ClientPop, Disabled, Months, AgeIn) %>%
+    right_join(inactiveageout) %>%
+    mutate(AgeIn = ifelse(is.na(AgeIn), 0, AgeIn),
+           Inactive = AgeIn+Inactive) %>%
+    select(ProgramType, ClientPop, Disabled, Months, Inactive)
+  activeafterrecid <- data.frame(recid) %>%
     mutate(ProgramType = "Homeless",
            ProgramPop = ClientPop,
-           Recid = InactiveRecid+ExitRecid) %>%
-    group_by(ProgramType, ProgramPop, ClientPop, Disabled) %>%
+           Months = 0) %>%
+    group_by(ProgramType, ProgramPop, ClientPop, Disabled, Months) %>%
     summarise(Recid = sum(Recid)) %>%
     right_join(activeaftersr) %>%
     mutate(Recid = ifelse(is.na(Recid), 0, Recid),
-           Active = Active+Recid) %>%
-    select(-Recid)
-  rm(activeaftersr)
-  rm(extracapacity)
-  rm(inactiveaftersr)
-  rm(homeless)
-  rm(programexits)
-  rm(recid)
-  rm(sr)
-  rm(nonhomeless)
+           New = FTH+Entries+Recid)
+  activeafterrecid1 <- activeafterrecid %>%
+    mutate(Months = Months+1,
+           Months = ifelse(ProgramType == "Homeless" & Months > 18, 18, Months),
+           Months = ifelse(ProgramType == "Prevention" & Months > 12, 12, Months),
+           Months = ifelse(ProgramType == "PSH" & Months > 60, 60, Months),
+           Months = ifelse(ProgramType %in% c("RRH", "TH") & Months > 24, 24, Months)) %>%
+    group_by(ProgramType, ProgramPop, ClientPop, Disabled, Months) %>%
+    summarise(Active = sum(Active)) %>%
+    filter(ProgramPop == ClientPop | Active > 0)
+  activeafterrecid2 <- activeafterrecid %>%
+    filter(Months == 0) %>%
+    group_by(ProgramType, ProgramPop, ClientPop, Disabled, Months) %>%
+    summarise(Active = sum(New))
+  activeafterrecid <- rbind(activeafterrecid1, activeafterrecid2) %>%
+    mutate(AgeOut = NA)
+  for (p in 1:nrow(activeafterrecid)){
+    set.seed(p+500)
+    activeafterrecid$AgeOut[p] = ifelse(activeafterrecid$ClientPop[p] == "Youth", sum(runif(activeafterrecid$Active[p]) > 71/72), 0)
   }
-homeless <- active %>%
-  filter(ProgramType == "Homeless") %>%
-  mutate(Exits = 0)
-homelessnums <- homeless %>%
-  summarise(Total = sum(Active),
-            Youth = sum(Active[ClientPop == "Youth"]),
-            Veterans = sum(Active[ClientPop == "Veteran"]))
-homelesstotal[2] <- sum(homelessnums$Total)
-homelessyouth[2] <- sum(homelessnums$Youth)
-homelessvets[2] <- sum(homelessnums$Veterans)
-rm(homelessnums)
+  activeafterrecid$Active <- activeafterrecid$Active-activeafterrecid$AgeOut
+  active <- data.frame(activeafterrecid) %>%
+    filter(AgeOut > 0) %>%
+    mutate(AgeIn = AgeOut,
+           ClientPop = "Adult") %>%
+    select(ProgramType, ProgramPop, ClientPop, Disabled, Months, AgeIn) %>%
+    full_join(activeafterrecid) %>%
+    mutate(AgeIn = ifelse(is.na(AgeIn), 0, AgeIn),
+           Active = ifelse(is.na(Active), 0, Active),
+           Active = AgeIn+Active,
+           ProgramPop = ifelse(ProgramType == "Homeless", ClientPop, as.character(ProgramPop))) %>%
+    group_by(ProgramType, ProgramPop, ClientPop, Disabled, Months) %>%
+    summarise(Active = sum(Active))
+  homeless <- active %>%
+    filter(ProgramType == "Homeless") %>%
+    mutate(Exits = 0)
+  homelessnums <- homeless %>%
+    group_by(ClientPop) %>%
+    summarise(Total = sum(Active))
+  homelesstotal[i+1] <- sum(homelessnums$Total)
+  homelessyouth[i+1] <- homelessnums$Total[homelessnums$ClientPop == "Youth"]
+  homelessvets[i+1] <- homelessnums$Total[homelessnums$ClientPop == "Veteran"]
+}
+totalframe <- data.frame(c(0, months), homelesstotal)
+colnames(totalframe) <- c("Months", "Total")
+totalframe$Veterans <- homelessvets
+totalframe$Youth <- homelessyouth
+totalframe <- melt(totalframe, id.vars = "Months") %>%
+  mutate(prediction = "model") %>%
+  rbind(base)
 
-endframe <- data.frame(homelesstotal, homelessvets) %>%
-  cbind(homelessyouth) %>%
-  mutate(time = c("Start", "Finish"))
+x <- ggplot(totalframe, aes(x=Months, y=value, color=variable, linetype=prediction)) 
+
+x + stat_smooth(se=FALSE) + labs(x="Months out", y=NULL, title="Individuals experiencing homelessness", color=NULL, linetype=NULL) + 
+  scale_x_continuous(breaks = seq(0, 60, 12)) + scale_color_manual(values = c(stehblue, stehgreen, stehorange)) + stehtheme +
+  scale_linetype_manual(values = c("dotted", "solid")) + theme(legend.position = "bottom") +
+  scale_y_continuous(limits = c(0, 1000), breaks = seq(0, 1000, 250), labels = format(seq(0, 1000, 250), big.mark = ","))

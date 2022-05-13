@@ -4,9 +4,11 @@ library(survival)
 library(reshape2)
 setwd("U:/system model")
 mod <- read.csv("singles.csv")
+psh <- read.csv("psh.csv")
 colnames(mod) <- c("EnrollmentID", "PersonalID", "HouseholdID", "Program", "ProgramType", "Veteran", "Entry", "MoveIn", "Exit", 
                    "Age", "ChronicHealth", "Developmental", "HIV", "MentalHealth", "Physical", "SubstanceAbuse", "NightBefore")
-
+colnames(psh) <- c("EnrollmentID", "PersonalID", "Entry", "MoveIn", "Exit", "Veteran", "ChronicHealth", "Developmental", "HIV",
+                   "MentalHealth", "Physical", "SubstanceAbuse", "OldestHH")
 mod2 <- mod %>%
   filter(Program != "KEYS Youth Dedicated Service Team - OH0598",
          Program != "LYS Youth Crisis Center Shelter",
@@ -27,12 +29,12 @@ mod2 <- mod %>%
          PreventionEligible = ifelse(NightBefore %in% c("", "Client doesn't know", "Client refused", "Data not collected",
           "Emergency shelter, including hotel or motel paid for with emergency shelter voucher, or RHY-funded Host Home shelter",
           "Hospital or other residential non-psychiatric medical facility", "Jail, prison or juvenile detention facility",
-          "Place not meant for habitation (e.g., a vehicle, an abandoned building, bus/train/subway station/airport or anywhere outside)",
-          "Safe Haven"), 0, 1),
-         ExitMonth = month(Exit),
-         ExitMonth = ifelse(is.na(ExitMonth), 0, ExitMonth),
-         ExitYear = year(Exit),
-         ExitYear = ifelse(is.na(ExitYear), 0, ExitYear)) %>%
+    "Place not meant for habitation (e.g., a vehicle, an abandoned building, bus/train/subway station/airport or anywhere outside)",
+    "Safe Haven"), 0, 1),
+    ExitMonth = month(Exit),
+    ExitMonth = ifelse(is.na(ExitMonth), 0, ExitMonth),
+    ExitYear = year(Exit),
+    ExitYear = ifelse(is.na(ExitYear), 0, ExitYear)) %>%
   filter(is.na(Exit) | Exit >= as.Date("2016-01-01"))
 
 hh <- mod2 %>%
@@ -246,7 +248,6 @@ for (i in 1:length(people)){
 }
 dateframe <- filter(dateframe, !is.na(dateframe$PersonalID))
 dateframe$Exit[dateframe$Exit == as.Date("2019-01-01")] <- NA
-dateframe <- filter(dateframe, is.na(Exit) | Exit >= "2016-01-01")
 
 clients <- mod3 %>%
   group_by(PersonalID) %>%
@@ -286,24 +287,10 @@ mindiff2 <- mindiff %>%
 mindiff3 <- data.frame(mindiff2)
 
 dateframenewest <- rbind(done, mindiff3) %>%
-  mutate(ClientPop = ifelse(Veteran == 1, "Veteran",
-                            ifelse(Youth == 1, "Youth", "Adult")),
-         Disabled = ifelse(ProgramType == "PSH", 1, Disabled),
-         ExitMonth = update(Exit, mday = 1),
-         FakeEntry = as.Date(NA),
-         Months = NA) %>%
-  select(PersonalID:Disabled, PreventionEligible:Months)
-exitmonths <- sort(unique(dateframenewest$ExitMonth))
-dateframenewest$ExitMonth[is.na(dateframenewest$Exit)] <- as.Date("2019-01-01")
-dateframenewest$FakeEntry[dateframenewest$Entry < as.Date("2016-01-01")] <- as.Date("2015-12-31")
-dateframenewest$FakeEntry[dateframenewest$Entry >= as.Date("2016-01-01")] <- 
-  dateframenewest$Entry[dateframenewest$Entry >= "2016-01-01"]
-
-for (i in 1:nrow(dateframenewest)){
-  dateframenewest$Months[i] <- sum(exitmonths > dateframenewest$FakeEntry[i] & exitmonths <= dateframenewest$ExitMonth[i])
-}
-dateframenewest$Months[dateframenewest$ProgramType == "Homeless"] <- dateframenewest$Months[dateframenewest$ProgramType == "Homeless"]+1
-
+  mutate(MonthsSinceEntry = as.numeric(as.Date("2019-01-01")-Entry)%/%30,
+         LoS = as.numeric(Exit-Entry)%/%30,
+         exited = ifelse(is.na(Exit), 0, 1),
+         exitedtime = ifelse(exited == 1, LoS, MonthsSinceEntry))
 homeless <- filter(dateframenewest, ProgramType == "Homeless")
 nonhomeless <- filter(dateframenewest, ProgramType != "Homeless")
 
@@ -323,10 +310,9 @@ exitto2 <- exitto %>%
 dateframenewest2 <- left_join(dateframenewest, exitto2) %>%
   select(-Entry.y)
 dateframenewest2$ExitedTo[dateframenewest2$ExitedTo == dateframenewest2$ProgramType] <- NA
-dateframenewest2$SR <- ifelse(!is.na(dateframenewest2$Exit) & 
-                                (is.na(dateframenewest2$ExitedTo) | dateframenewest2$ProgramType %in% c("Prevention", "PSH", "RRH")), 1,0)
+dateframenewest2$exited[!is.na(dateframenewest2$ExitedTo) & dateframenewest2$ProgramType == "Homeless"] <- 0
 
-recidivism <- inner_join(dateframenewest2, homeless, by = "PersonalID") %>%
+recidivism <- inner_join(dateframenewest, homeless, by = "PersonalID") %>%
   filter(!is.na(Exit.x),
          Entry.y >= Exit.x,
          as.numeric(Entry.y-Exit.x) <= 730) %>%
@@ -338,70 +324,293 @@ recidivism2 <- recidivism %>%
   summarise(Return = min(Entry.y))
 
 dateframenewest3 <- left_join(dateframenewest2, recidivism2) %>%
-  mutate(Returned = ifelse(is.na(Return), 0, 1)) %>%
-  select(PersonalID:ClientPop, SR, Returned, Months, ExitMonth)
+  mutate(returned = ifelse(is.na(Return), 0, 1),
+         MonthsSinceExit = as.numeric(as.Date("2019-01-01")-Exit)%/%30,
+         MonthsToReturn = as.numeric(Return-Exit)%/%30,
+         returntime = ifelse(returned == 1, MonthsToReturn, MonthsSinceExit)) %>%
+  select(PersonalID:PreventionEligible, exited:ExitedTo, returned, returntime)
 
-ProgramType <- c(rep(c("Homeless", "Prevention", "RRH", "TH"), each = 6), rep("PSH", 3))
-ClientPop <- c(rep(c("Adult", "Veteran", "Youth"), each = 2, 4),
-               c("Adult", "Veteran", "Youth"))
-activeskeleton <- data.frame(ProgramType, ClientPop) 
-activeskeleton$Disabled <- c(rep(c(0, 1), 12), rep(1, 3))
+return <- filter(dateframenewest3, !is.na(Exit))
+returnsurv <- Surv(return$returntime, return$returned)
+kmcurves <- survfit(returnsurv~ProgramType, return)
+kmnums <- c(1:24, 43:66, 80:103, 117:140, 154:177)
+returnrates <- kmcurves$n.event[kmnums]/kmcurves$n.risk[kmnums]
+programtypes <- c(rep("Homeless", 24), rep("Prevention", 24), rep("PSH", 24), rep("RRH", 24), rep("TH", 24))
+survframe <- data.frame(programtypes, returnrates)
+survframe$Months <- rep(0:23, 5)
+colnames(survframe) <- c("ProgramType", "ReturnProb", "Months")
 
-inactivept <- c(rep("Homeless", 144), rep("Prevention", 144), rep("PSH", 72), rep("RRH", 144), rep("TH", 144))
-inactivecp <- c(rep(c("Adult", "Veteran", "Youth"), each = 48, 2), rep(c("Adult", "Veteran", "Youth"), each = 24), 
-                rep(c("Adult", "Veteran", "Youth"), each = 48, 2))
-inactiveskeleton <- data.frame(inactivept, inactivecp)
-colnames(inactiveskeleton) <- c("ProgramType", "ClientPop")
-inactiveskeleton$Disabled <- c(rep(c(0, 1), each = 24, 6), rep(1, 72), rep(c(0, 1), each = 24, 6))
-inactiveskeleton$Months <- rep(0:23, 27)
+returntest <- filter(survframe, ReturnProb > 0) %>%
+  group_by(ProgramType) %>%
+  summarise(ReturnProb = min(ReturnProb))
 
-active <- dateframenewest3 %>%
-  filter(is.na(Exit)) %>%
-  group_by(ProgramType, ClientPop, Disabled) %>%
+zeroes <- filter(survframe, ReturnProb == 0) %>%
+  left_join(returntest, by = "ProgramType") %>%
+  mutate(ReturnProb = ReturnProb.y) %>%
+  select(ProgramType, ReturnProb, Months)
+
+survframe2 <- filter(survframe, ReturnProb > 0) %>%
+  rbind(zeroes)
+
+hlreturn <- filter(return, ProgramType == "Homeless")
+hlreturnmod <- coxph(Surv(returntime, returned)~Disabled+Veteran+Youth, data = hlreturn)
+hlreturn$RiskRatio <- predict(hlreturnmod, hlreturn, type = "risk")
+hlreturn <- hlreturn %>%
+  mutate(Months = returntime) %>%
+  select(ProgramType, Disabled:Youth, RiskRatio)
+hlreturn <- unique(hlreturn)
+
+preventreturn <- filter(return, ProgramType == "Prevention")
+preventreturnmod <- coxph(Surv(returntime, returned)~Disabled+Veteran+Youth, data = preventreturn)
+preventreturn$RiskRatio <- predict(preventreturnmod, preventreturn, type = "risk")
+preventreturn <- preventreturn %>%
+  mutate(Months = returntime) %>%
+  select(ProgramType, Disabled:Youth, RiskRatio)
+preventreturn <- unique(preventreturn)
+
+threturn <- filter(return, ProgramType == "TH")
+threturnmod <- coxph(Surv(returntime, returned)~Disabled+Veteran+Youth, data = threturn)
+threturn$RiskRatio <- predict(threturnmod, threturn, type = "risk")
+threturn <- threturn %>%
+  mutate(Months = returntime) %>%
+  select(ProgramType, Disabled:Youth, RiskRatio)
+threturn <- unique(threturn)
+
+rrhreturn <- filter(return, ProgramType == "RRH")
+rrhreturnmod <- coxph(Surv(returntime, returned)~Disabled+Veteran+Youth, data = rrhreturn)
+rrhreturn$RiskRatio <- predict(rrhreturnmod, rrhreturn, type = "risk")
+rrhreturn <- rrhreturn %>%
+  mutate(Months = returntime) %>%
+  select(ProgramType, Disabled:Youth, RiskRatio)
+rrhreturn <- unique(rrhreturn)
+
+pshreturn <- filter(return, ProgramType == "PSH")
+pshreturnmod <- coxph(Surv(returntime, returned)~Veteran+Youth, data = pshreturn)
+pshreturn$RiskRatio <- predict(pshreturnmod, pshreturn, type = "risk")
+pshreturn <- pshreturn %>%
+  mutate(Months = returntime,
+         Disabled = 1) %>%
+  select(ProgramType, Disabled:Youth, RiskRatio)
+pshreturn <- unique(pshreturn)
+
+riskratios <- rbind(hlreturn, preventreturn) %>%
+  rbind(threturn) %>%
+  rbind(rrhreturn) %>%
+  rbind(pshreturn) %>%
+  mutate(ProgramType = factor(ProgramType))
+
+returntable <- left_join(survframe2, riskratios) %>%
+  mutate(SimpleReturnOdds = (1-ReturnProb)/ReturnProb,
+         ReturnOdds = (1-ReturnProb)/(ReturnProb*RiskRatio),
+         ReturnProb = 1/(ReturnOdds+1),
+         ClientPop = ifelse(Veteran == 1, "Veteran",
+                            ifelse(Youth == 1, "Youth", "Adult"))) %>%
+  select(ProgramType:Disabled, ClientPop)
+
+inactiveskeleton <- select(returntable, -ReturnProb)
+activeprogramtypes <- c(rep("Homeless", 114), rep("Prevention", 78), rep("PSH", 183), rep("RRH", 150), rep("TH", 150))
+activemonths <- c(rep(0:18, each = 6),
+                  rep(0:12, each = 6),
+                  rep(0:60, each = 3),
+                  rep(rep(0:24, each = 6), 2))
+activeskeleton <- data.frame(activeprogramtypes, activemonths)
+colnames(activeskeleton) <- c("ProgramType", "Months")
+activeskeleton$ClientPop <- c(rep(c("Adult", "Youth", "Veteran"), each = 2, 32), rep(c("Adult", "Youth", "Veteran"), 61),
+                              rep(c("Adult", "Youth", "Veteran"), each = 2, 50))
+activeskeleton$Disabled <- c(rep(c(0, 1), 96), rep(1, 183), rep(c(0, 1), 150))
+
+psh2 <- psh %>%
+  mutate(Youth = ifelse(OldestHH < 25 & Veteran != "Yes", 1, 0),
+         Veteran = ifelse(Veteran == "Yes", 1, 0),
+         Entry = ymd(Entry),
+         MoveIn = ymd(MoveIn),
+         Exit = ymd(Exit)) %>%
+  filter(!is.na(MoveIn),
+         MoveIn < "2019-01-01",
+         MoveIn > "2012-01-01")
+psh2$Exit[psh2$Exit >= "2019-01-01"] <- NA
+
+pshdates <- psh2 %>%
+  mutate(Entry = MoveIn,
+         FakeExit = as.Date(NA))
+pshdates$FakeExit[is.na(pshdates$Exit)] <- as.Date("2019-01-01")
+pshdates$FakeExit[!is.na(pshdates$Exit)] <- pshdates$Exit[!is.na(pshdates$Exit)]
+pshdates <- pshdates %>% select(PersonalID, Entry, FakeExit) %>%
+  filter(FakeExit > Entry)
+
+newpshdates <- data.frame(t(rep(NA, 3)))
+colnames(newpshdates) <- c("PersonalID", "Entry", "Exit")
+newpshdates$Entry <- as.Date(newpshdates$Entry)
+newpshdates$Exit <- as.Date(newpshdates$Exit)
+pshpeople <- unique(pshdates$PersonalID)
+for (i in 1:length(pshpeople)){
+  frame <- filter(pshdates, PersonalID == pshpeople[i])
+  phdates <- as.Date(NA)
+  while (nrow(frame) > 0) {
+    phdates <- append(phdates, seq.Date(frame$Entry[1], frame$FakeExit[1]-1, "day"))
+    frame <- frame[-1,]
+  }
+  phdates <- phdates[!is.na(phdates)]
+  phdates <- unique(phdates)
+  alldates <- seq.Date(min(phdates), max(phdates)+1, "days")
+  nphdates <- alldates[alldates %in% phdates == FALSE]
+  entries <- min(phdates)
+  exits <- min(nphdates)
+  while (length(phdates) > 0){
+    phdates <- phdates[phdates > max(exits)]
+    if(length(phdates) > 0){
+      entries <- append(entries, min(phdates))
+      nphdates <- nphdates[nphdates > max(entries)]
+      exits <- append(exits, min(nphdates))
+      phdates <- phdates[phdates > max(exits)]
+    }
+  }
+  phdateframe <- data.frame(entries, exits)
+  phdateframe$PersonalID <- pshpeople[i]
+  colnames(phdateframe) <- c("Entry", "Exit", "PersonalID")
+  newpshdates <- rbind(newpshdates, phdateframe)
+  rm(alldates)
+  rm(nphdates)
+  rm(entries)
+  rm(exits)
+  rm(phdates)
+}
+newpshdates <- filter(newpshdates, !is.na(PersonalID))
+newpshdates$Exit[newpshdates$Exit == as.Date("2019-01-01")] <- NA
+newpshdates$MonthsIn <- as.numeric(newpshdates$Exit-newpshdates$Entry)%/%30
+newpshdates$MonthsSinceEntry <- as.numeric(as.Date("2019-01-01")-newpshdates$Entry)%/%30
+newpshdates$exited <- ifelse(is.na(newpshdates$Exit), 0, 1)
+newpshdates$exittime <- ifelse(newpshdates$exited == 1, newpshdates$MonthsIn, newpshdates$MonthsSinceEntry)  
+newpshdates$MonthsIn <- NULL
+newpshdates$MonthsSinceEntry <- NULL
+
+psh3 <- select(psh2, PersonalID, MoveIn, Veteran, Youth)
+psh3 <- unique(psh3)
+psh4 <- left_join(newpshdates, psh3, by = c("PersonalID", c("Entry" = "MoveIn"))) %>%
+  mutate(ProgramType = "PSH")
+
+pshsurv <- Surv(psh4$exittime, psh4$exited)
+kmcurvepsh <- survfit(pshsurv~ProgramType, psh4)
+pshexitrate <- kmcurvepsh$n.event/kmcurvepsh$n.risk
+
+nopsh <- filter(dateframenewest3, ProgramType != "PSH")
+exitsurv <- Surv(nopsh$exitedtime, nopsh$exited)
+kmcurvesexit <- survfit(exitsurv~ProgramType, nopsh)
+exitnums <- c(1:53, 56:80, 83:107)
+survratesexit <- c(kmcurvesexit$n.event[exitnums]/kmcurvesexit$n.risk[exitnums], pshexitrate)
+programtypes <- c(rep("Homeless", 40), rep("Prevention", 13), rep("RRH", 25), rep("TH", 25), rep("PSH", 85))
+survframeexit <- data.frame(programtypes, survratesexit)
+survframeexit$Months <- c(0:39, 0:12, 0:24, 0:24, 0:84)
+colnames(survframeexit) <- c("ProgramType", "ExitRate", "Months")
+exitframe <- left_join(activeskeleton, survframeexit)
+
+pshexitmod <- coxph(Surv(exittime, exited)~Veteran+Youth, data = psh4)
+psh4$RiskRatio <- predict(pshexitmod, psh4, type = "risk")
+pshexit <- psh4 %>%
+  mutate(Months = exittime,
+         Disabled = 1) %>%
+  select(ProgramType, Disabled, Veteran, Youth, RiskRatio)
+pshexit <- unique(pshexit)
+
+hlexit <- filter(dateframenewest3, ProgramType == "Homeless")
+hlexitmod <- coxph(Surv(exitedtime, exited)~Disabled+Veteran+Youth, data = hlexit)
+hlexit$RiskRatio <- predict(hlexitmod, hlexit, type = "risk")
+hlexit <- hlexit %>%
+  mutate(Months = exitedtime) %>%
+  select(ProgramType, Disabled:Youth, RiskRatio)
+hlexit <- unique(hlexit)
+
+preventexit <- filter(dateframenewest3, ProgramType == "Prevention")
+preventexitmod <- coxph(Surv(exitedtime, exited)~Disabled+Veteran+Youth, data = preventexit)
+preventexit$RiskRatio <- predict(preventexitmod, preventexit, type = "risk")
+preventexit <- preventexit %>%
+  mutate(Months = exitedtime) %>%
+  select(ProgramType, Disabled:Youth, RiskRatio)
+preventexit <- unique(preventexit)
+
+thexit <- filter(dateframenewest3, ProgramType == "TH")
+thexitmod <- coxph(Surv(exitedtime, exited)~Disabled+Veteran+Youth, data = thexit)
+thexit$RiskRatio <- predict(thexitmod, thexit, type = "risk")
+thexit <- thexit %>%
+  mutate(Months = exitedtime) %>%
+  select(ProgramType, Disabled:Youth, RiskRatio)
+thexit <- unique(thexit)
+
+rrhexit <- filter(dateframenewest3, ProgramType == "RRH")
+rrhexitmod <- coxph(Surv(exitedtime, exited)~Disabled+Veteran+Youth, data = rrhexit)
+rrhexit$RiskRatio <- predict(rrhexitmod, rrhexit, type = "risk")
+rrhexit <- rrhexit %>%
+  mutate(Months = exitedtime) %>%
+  select(ProgramType, Disabled:Youth, RiskRatio)
+rrhexit <- unique(rrhexit)
+
+exitriskratios <- rbind(hlexit, preventexit) %>%
+  rbind(thexit) %>%
+  rbind(rrhexit) %>%
+  rbind(pshexit) %>%
+  mutate(ProgramType = factor(ProgramType),
+         ClientPop = ifelse(Veteran == 1, "Veteran",
+                            ifelse(Youth == 1, "Youth", "Adult"))) %>%
+  select(ProgramType, Disabled, RiskRatio, ClientPop)
+
+exittable <- left_join(exitframe, exitriskratios) %>%
+  mutate(SimpleExitOdds = (1-ExitRate)/ExitRate,
+         ExitOdds = (1-ExitRate)/(ExitRate*RiskRatio),
+         ExitProb = 1/(ExitOdds+1),
+         ExitProb = ifelse((ProgramType == "Prevention" & Months == 12) | (ProgramType %in% c("RRH", "TH") & Months == 24), 1, 
+                           ExitProb)) %>%
+  select(ProgramType:Disabled, ExitProb)
+
+active <- filter(dateframenewest3, is.na(Exit)) %>%
+  mutate(Months = as.numeric(as.Date("2019-01-01")-Entry)%/%30,
+         ClientPop = ifelse(Veteran == 1, "Veteran",
+                            ifelse(Youth == 1, "Youth", "Adult")),
+         Disabled = ifelse(ProgramType == "PSH", 1, Disabled))
+active$Months[active$Months > 60] <- 60
+active$Months[active$Months > 12 & active$ProgramType == "Prevention"] <- 12
+active$Months[active$Months > 18 & active$ProgramType == "Homeless"] <- 18
+active$Months[active$Months > 24 & active$ProgramType %in% c("TH", "RRH")] <- 24
+activetable <- active %>%
+  group_by(ProgramType, Months, Disabled, ClientPop) %>%
   summarise(Active = n()) %>%
   right_join(activeskeleton) %>%
-  mutate(Active = ifelse(is.na(Active), 0 , Active))
+  mutate(Active = ifelse(is.na(Active), 0, Active))
 
-inactive <- dateframenewest3 %>%
-  filter(!is.na(Exit)) %>%
-  mutate(Months = as.numeric(as.Date("2019-01-01")-Exit)%/%30) %>%
-  filter(Months < 24) %>%
-  group_by(ProgramType, ClientPop, Disabled, Months) %>%
+inactive <- anti_join(dateframenewest3, active, by = "PersonalID")
+inactive2 <- inactive %>%
+  group_by(PersonalID) %>%
+  summarise(Exit = max(Exit)) %>%
+  inner_join(inactive) %>%
+  mutate(Months = as.numeric(as.Date("2019-01-01")-Exit)%/%30,
+         ClientPop = ifelse(Veteran == 1, "Veteran",
+                            ifelse(Youth == 1, "Youth", "Adult"))) %>%
+  filter(Months < 24)
+inactivetable <- inactive2 %>%
+  group_by(ProgramType, Months, Disabled, ClientPop) %>%
   summarise(Inactive = n()) %>%
   right_join(inactiveskeleton) %>%
   mutate(Inactive = ifelse(is.na(Inactive), 0, Inactive))
 
 fth <- dateframenewest3 %>%
-  filter(ProgramType == "Homeless") %>%
+  filter(ProgramType %in% c("Homeless", "Prevention")) %>%
   group_by(PersonalID) %>%
   summarise(Entry = min(Entry)) %>%
   inner_join(dateframenewest3) %>%
-  filter(Entry >= "2018-01-01") %>%
-  group_by(ProgramType, ClientPop, Disabled) %>%
-  summarise(FTH = round(n()/12, 0),
-            PreventionEligible = round(sum(PreventionEligible)/12, 0))
+  mutate(EntryMonth = update(Entry, mday = 1)) %>%
+  group_by(EntryMonth, Disabled, Veteran, Youth) %>%
+  summarise(FTH = n(),
+            PreventionEligible = sum(PreventionEligible)) %>%
+  filter(EntryMonth >= as.Date("2018-01-01")) %>%
+  mutate(Month = month(EntryMonth),
+         ClientPop = ifelse(Veteran == 1, "Veteran",
+                            ifelse(Youth == 1, "Youth", "Adult"))) %>%
+  group_by(Disabled, ClientPop) %>%
+  summarise(FTH = round(mean(FTH), 0),
+            PreventionEligible = round(mean(PreventionEligible), 0))
 
-
-test <- dateframenewest3 %>%
-  filter(ProgramType != "Homeless",
-         Entry < "2016-02-01" & (is.na(Exit) | Exit >= "2016-02-01"),
-         Months > 0)
-
-
-exitrates <- dateframenewest3 %>%
-  group_by(ProgramType, ClientPop, Disabled) %>%
-  summarise(ExitRate = sum(SR)/sum(Months))
-
-returnrates <- dateframenewest3 %>%
-  filter(!is.na(Exit)) %>%
-  group_by(ProgramType, ClientPop, Disabled) %>%
-  summarise(ReturnRate = sum(Returned)/(n()*24))
-returnrates$ReturnRate[returnrates$ReturnRate == 0] <- 0.00125
-
-
-setwd("U:/system model/No winter/inputs")
-write.csv(active, "active.csv")
-write.csv(inactive, "inactive.csv")
+setwd("U:/system model/No winter/survival/inputs")
+write.csv(activetable, "active.csv")
+write.csv(inactivetable, "inactive.csv")
+write.csv(exittable, "exitrates.csv")
+write.csv(returntable, "returnrates.csv")
 write.csv(fth, "fth.csv")
-write.csv(exitrates, "exitrates.csv")
-write.csv(returnrates, "returnrates.csv")
